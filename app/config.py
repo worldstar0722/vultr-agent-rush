@@ -11,6 +11,8 @@ MAX_TOKENS_CEILING = 2048
 MAX_PROMPT_BYTES_CEILING = 32768
 MAX_RETRIES_CEILING = 1
 MAX_REASONING_CEILING = 1024  # reasoning tokens are billed as output; keep them small
+MAX_IMAGE_BYTES_CEILING = 5 * 1024 * 1024  # screenshot upload: 5 MiB
+MAX_DOC_BYTES_CEILING = 5 * 1024 * 1024  # PDF / DOCX / text upload: 5 MiB
 
 
 def _num(name: str, default: float) -> float:
@@ -45,6 +47,11 @@ class Settings:
     ai_lifetime_max_calls: int = 50  # provider HTTP attempts EVER (every retry counts)
     ai_max_prompt_bytes: int = MAX_PROMPT_BYTES_CEILING  # UTF-8 bytes of system + user prompt
     ai_client_hourly_limit: int = 6  # analysis runs per client per rolling hour
+    # Screenshot intake. The text prompt keeps its own 32,768-byte cap; the image is bounded here.
+    ai_max_image_bytes: int = MAX_IMAGE_BYTES_CEILING
+    ai_max_doc_bytes: int = (
+        MAX_DOC_BYTES_CEILING  # documents are parsed locally, text is capped below
+    )
 
     def __post_init__(self) -> None:
         clamp = object.__setattr__  # frozen dataclass
@@ -52,6 +59,16 @@ class Settings:
         reasoning = max(0, min(int(self.llm_reasoning_max_tokens), MAX_REASONING_CEILING))
         clamp(self, "llm_reasoning_max_tokens", min(reasoning, self.llm_max_tokens - 1))
         clamp(self, "llm_max_retries", max(0, min(int(self.llm_max_retries), MAX_RETRIES_CEILING)))
+        clamp(
+            self,
+            "ai_max_image_bytes",
+            max(1024, min(int(self.ai_max_image_bytes), MAX_IMAGE_BYTES_CEILING)),
+        )
+        clamp(
+            self,
+            "ai_max_doc_bytes",
+            max(1024, min(int(self.ai_max_doc_bytes), MAX_DOC_BYTES_CEILING)),
+        )
         clamp(
             self,
             "ai_max_prompt_bytes",
@@ -92,4 +109,6 @@ class Settings:
             ai_lifetime_max_calls=int(_num("AI_LIFETIME_MAX_CALLS", d.ai_lifetime_max_calls)),
             ai_max_prompt_bytes=int(_num("AI_MAX_PROMPT_BYTES", d.ai_max_prompt_bytes)),
             ai_client_hourly_limit=int(_num("AI_CLIENT_HOURLY_LIMIT", d.ai_client_hourly_limit)),
+            ai_max_image_bytes=int(_num("AI_MAX_IMAGE_BYTES", d.ai_max_image_bytes)),
+            ai_max_doc_bytes=int(_num("AI_MAX_DOC_BYTES", d.ai_max_doc_bytes)),
         )

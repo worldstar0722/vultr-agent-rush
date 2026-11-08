@@ -36,3 +36,10 @@ def test_misleading_score_label_is_gone():
     js = (STATIC / "app.js").read_text()
     assert "Apply score change" not in js
     assert "Record score recommendation" in js and "No Canvas change" in js
+
+
+def test_upload_zone_accepts_documents_and_says_so():
+    js = (STATIC / "app.js").read_text()
+    assert "Drop screenshot, PDF, or document" in js
+    for needle in ("application/pdf", ".docx", ".csv", "/api/intake/upload"):
+        assert needle in js, needle

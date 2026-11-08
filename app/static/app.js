@@ -176,7 +176,8 @@ async function refreshAi() {
 function renderShell(route) {
   const link = (label, href, current) =>
     h("a", { href, class: "navlink", "aria-current": current ? "page" : null }, label);
-  const nav = [link("Case Queue", "#/queue", route.screen === "queue"), link("New synthetic case", "#/new", route.screen === "intake")];
+  const nav = [link("Case Queue", "#/queue", route.screen === "queue"), link("Board", "#/board", route.screen === "board"),
+    link("Calendar", "#/calendar", route.screen === "calendar"), link("New synthetic case", "#/new", route.screen === "intake")];
   if (route.caseId) {
     nav.push(h("div", { class: "navgroup" }, h("div", { class: "label" }, "Selected case"),
       h("div", { class: "mono navcase" }, route.caseId),
@@ -186,8 +187,9 @@ function renderShell(route) {
   $("nav").replaceChildren(...nav);
 
   const crumbs = [h("a", { href: "#/queue" }, "Cases")];
-  if (route.screen === "intake") {
-    crumbs.push(h("span", { class: "sep" }, "/"), h("span", { "aria-current": "page" }, "New synthetic case"));
+  const SIMPLE = { intake: "New synthetic case", board: "Board", calendar: "Calendar" };
+  if (SIMPLE[route.screen]) {
+    crumbs.push(h("span", { class: "sep" }, "/"), h("span", { "aria-current": "page" }, SIMPLE[route.screen]));
   } else if (route.caseId) {
     crumbs.push(h("span", { class: "sep" }, "/"), h("a", { href: `#/case/${route.caseId}/evidence` }, route.caseId));
     crumbs.push(h("span", { class: "sep" }, "/"), h("span", { "aria-current": "page" }, route.screen === "decision" ? "Decision" : "Evidence"));
@@ -196,7 +198,7 @@ function renderShell(route) {
 
   for (const r of ["ta", "professor"]) $(`role-${r}`).setAttribute("aria-pressed", String(S.role === r));
   $("ai").replaceChildren(...aiIndicator());
-  document.title = `${route.screen === "queue" ? "Cases" : route.screen === "intake" ? "New case" : route.caseId} - GradeCase`;
+  document.title = `${({ queue: "Cases", intake: "New case", board: "Board", calendar: "Calendar" })[route.screen] || route.caseId} - GradeCase`;
 }
 
 // ------------------------------------------------------------------ routing
@@ -204,6 +206,8 @@ function renderShell(route) {
 function parseRoute() {
   const p = location.hash.replace(/^#\/?/, "").split("/");
   if (p[0] === "new") return { screen: "intake", caseId: null };
+  if (p[0] === "board") return { screen: "board", caseId: null };
+  if (p[0] === "calendar") return { screen: "calendar", caseId: null };
   if (p[0] === "case" && p[1]) return { screen: p[2] === "decision" ? "decision" : "evidence", caseId: p[1] };
   return { screen: "queue", caseId: null };
 }
@@ -215,10 +219,11 @@ async function render() {
   const view = $("view");
   renderShell(route);
   try {
-    if (route.screen === "queue" || route.screen === "intake") {
+    const LIST_VIEWS = { queue: queueView, intake: intakeView, board: boardView, calendar: calendarView };
+    if (LIST_VIEWS[route.screen]) {
       S.detail = null;
       S.ui = { caseId: null, note: "", counted: "", body: null };
-      const node = route.screen === "queue" ? await queueView() : await intakeView();
+      const node = await LIST_VIEWS[route.screen]();
       if (token === renderToken) view.replaceChildren(node);
       return;
     }
@@ -930,6 +935,8 @@ async function intakeView() {
   const staff = h("select", { class: "input" }, ["TA Rivera", "TA Chen", "Prof. Demo"].map((n) => h("option", { value: n }, n)));
   const student = textIn("student", "S-4B21");
   const assignment = textIn("assignment", "HW6");
+  const courseIn = textIn("course", "DEMO 3060");
+  let uploadSource = null; // "screenshot" | "document" when the form was pre-filled from an upload
   const msgTs = h("input", { type: "datetime-local", class: "input" });
   const msgText = h("textarea", { class: "input", rows: 4, maxlength: 2000, placeholder: "I submitted on time but it shows late." });
   const ack = h("input", { type: "checkbox", id: "f-ack", "data-field": "synthetic_ack" });
@@ -982,7 +989,7 @@ async function intakeView() {
 
   function toggleMode() {
     const isNew = mode.value === "new";
-    ctxBox.hidden = !isNew; existingRow.hidden = isNew; studentRow.hidden = !isNew ? true : false; assignRow.hidden = !isNew;
+    ctxBox.hidden = !isNew; existingRow.hidden = isNew; studentRow.hidden = !isNew; assignRow.hidden = !isNew; courseRow.hidden = !isNew;
     ownerRow.hidden = !isNew; dirRow.hidden = isNew; staffRow.hidden = isNew || direction.value !== "outbound";
   }
   direction.addEventListener("change", () => { staffRow.hidden = direction.value !== "outbound"; });
@@ -990,12 +997,14 @@ async function intakeView() {
   const existingRow = fieldRow("Existing case", existing, "The student and assignment of that case are used.", "case_id");
   const studentRow = fieldRow("Student pseudo-ID", student, "Format S- plus 4 to 8 hex characters. Never a real name or number.", "student");
   const assignRow = fieldRow("Assignment ID", assignment, "Letters and digits, e.g. HW6.", "assignment");
+  const courseRow = fieldRow("Course (optional)", courseIn, "Leave empty to use the demo course.", "course");
   const ownerRow = fieldRow("Owner (optional)", owner, null, "owner");
   const dirRow = fieldRow("Message type", direction, null, "message.direction");
   const staffRow = fieldRow("Staff author", staff, null, "message.author");
 
   function fill(req) {
-    mode.value = "new"; toggleMode();
+    uploadSource = null; visionResult.replaceChildren();
+    mode.value = "new"; toggleMode(); courseIn.value = req.course || "";
     student.value = req.student; assignment.value = req.assignment;
     channel.value = req.message.channel; msgText.value = req.message.text;
     const local = (ts) => ts.slice(0, 16);
@@ -1021,6 +1030,8 @@ async function intakeView() {
     if (isNew) {
       req.student = student.value.trim(); req.assignment = assignment.value.trim();
       if (owner.value) req.owner = owner.value;
+      if (courseIn.value.trim()) req.course = courseIn.value.trim();
+      if (uploadSource) req.source = uploadSource;
       req.context = {
         assignment_name: ctxName.value.trim(), deadline: iso(ctxDeadline.value), max_points: numOrNull(ctxPoints),
         policy_ref: ctxPolicy.value,
@@ -1058,6 +1069,95 @@ async function intakeView() {
     if (target.scrollIntoView) target.scrollIntoView({ block: "center" });
   }
 
+
+  // ---- screenshot -> fields (a person reviews and edits everything before the case exists)
+  const visionResult = h("div", { id: "vision-result", "aria-live": "polite" });
+  const fileIn = h("input", { type: "file", id: "f-shot", accept: "image/png,image/jpeg,image/webp,application/pdf,.pdf,.docx,.txt,.csv,.tsv,.md,.eml,text/plain,text/csv", class: "sr-only" });
+  const preview = h("div", { class: "preview" });
+  const visionAck = h("input", { type: "checkbox", id: "f-vision-ack" });
+  const dropText = h("span", {}, "Drop screenshot, PDF, or document here, or choose a file (PNG, JPEG, WebP, PDF, DOCX, TXT or CSV, up to 5 MiB)");
+  const readBtn = h("button", { type: "button", class: "btn primary", id: "read-shot", disabled: true }, "Read file");
+  const drop = h("label", { class: "drop", for: "f-shot" }, dropText);
+  const MAX_IMG = 5 * 1024 * 1024;
+  const canRead = () => { readBtn.disabled = !(fileIn.files && fileIn.files[0] && visionAck.checked) || S.busy; };
+  const toLocal = (ts, off) => { // express a timestamp in the form's chosen offset
+    const sign = off[0] === "-" ? -1 : 1, mins = sign * (Number(off.slice(1, 3)) * 60 + Number(off.slice(4, 6)));
+    const d = new Date(Date.parse(ts) + mins * 60000);
+    return d.toISOString().slice(0, 16);
+  };
+  function fillFromExtraction(ex, kind) {
+    uploadSource = kind === "image" ? "screenshot" : "document";
+    mode.value = "new"; toggleMode();
+    const first = ex.message_time || ex.deadline || ex.submission_time;
+    const off = first ? first.slice(-6) : "-07:00";
+    if (![...offset.options].some((o) => o.value === off)) offset.append(h("option", { value: off }, `UTC${off}`));
+    offset.value = off;
+    const loc = (ts) => (ts ? toLocal(ts, off) : "");
+    student.value = ex.student_id || ""; assignment.value = ex.assignment_id || ""; courseIn.value = ex.course || "";
+    if (ex.channel) channel.value = ex.channel;
+    msgText.value = ex.student_message || ""; msgTs.value = loc(ex.message_time);
+    ctxName.value = ex.assignment_name || ""; ctxDeadline.value = loc(ex.deadline); ctxPoints.value = ex.max_points ?? "";
+    attempts.replaceChildren(...(ex.submission_time ? [attemptRow({ ts: loc(ex.submission_time), state: "submitted" })] : []));
+    rubric.replaceChildren(...(ex.rubric_total != null ? [rubricRow({ label: "Rubric total (read from screenshot)", max: ex.max_points ?? ex.rubric_total, awarded: ex.rubric_total })] : []));
+    scEntered.value = ex.score_entered ?? ""; scPosted.value = ex.score_entered ?? ""; scDed.value = 0; scGraded.checked = ex.score_entered != null;
+  }
+  function showVision(b) {
+    visionResult.replaceChildren(h("div", { class: `notice ${b.mock ? "warn" : "success"}`, role: "status" }, h("div", {},
+      h("strong", {}, b.mock ? "Sample values, not analysed from your file. " : b.kind === "image" ? "The model read your screenshot. " : `The model read your ${b.kind === "pdf" ? "PDF" : b.kind === "docx" ? "Word file" : "text file"}. `),
+      "Every field below is editable. Check each value against your source file: the model can misread, and nothing is created until you click Create case.",
+      h("p", { class: "meta" }, b.mock ? "Mock mode: no AI model analysed the file."
+        : `${b.provenance.model}, ${b.provenance.latency_ms} ms${b.provenance.total_tokens ? `, ${b.provenance.total_tokens} tokens` : ""}. Confidence: ${b.extraction.confidence}.`),
+      b.problems.length > 0 && h("ul", { class: "plain" }, b.problems.map((p) => h("li", { class: "flag" }, p))),
+      b.extraction.issue_type && h("p", { class: "meta" }, `Issue type read: ${b.extraction.issue_type.replace(/_/g, " ")}.`))));
+  }
+  async function readShot() {
+    if (S.busy) return;
+    const f = fileIn.files[0];
+    if (!f) return;
+    if (f.size > MAX_IMG) { visionResult.replaceChildren(h("div", { class: "notice error", role: "alert" }, "That image is larger than 5 MiB.")); return; }
+    if (S.cfg.ai_mode !== "mock") {
+      const left = S.ai && S.ai.budget ? S.ai.budget.calls_remaining : "?";
+      if (!confirm(`This sends the file to the AI provider and uses one of the ${left} remaining lifetime AI calls. Continue?`)) return;
+    }
+    S.busy = true; canRead();
+    const old = readBtn.textContent; readBtn.textContent = "Reading...";
+    visionResult.replaceChildren(h("p", { class: "meta", role: "status" }, S.cfg.ai_mode === "mock" ? "Preparing sample values..." : "Reading the file with the AI model. This can take several seconds."));
+    try {
+      const fd = new FormData();
+      fd.append("file", f); fd.append("synthetic_ack", "true");
+      const resp = await fetch("/api/intake/upload", { method: "POST", body: fd });
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok) {
+        visionResult.replaceChildren(h("div", { class: "notice error", role: "alert" }, typeof data.detail === "string" ? data.detail : `Request failed (HTTP ${resp.status})`));
+      } else { fillFromExtraction(data.extraction, data.kind); showVision(data); }
+    } catch (e) {
+      visionResult.replaceChildren(h("div", { class: "notice error", role: "alert" }, `Could not reach the server: ${e.message}`));
+    } finally { S.busy = false; readBtn.textContent = old; canRead(); await refreshAi(); }
+  }
+  function onFile() {
+    preview.replaceChildren();
+    const f = fileIn.files && fileIn.files[0];
+    if (f) {
+      dropText.textContent = `${f.name} (${Math.max(1, Math.round(f.size / 1024))} KiB)`;
+      if (/^image\//.test(f.type)) preview.append(h("img", { src: URL.createObjectURL(f), alt: "Preview of the selected screenshot" }));
+      else preview.append(h("p", { class: "meta" }, "No preview for documents. The text is read on the server."));
+    }
+    canRead();
+  }
+  fileIn.addEventListener("change", onFile);
+  visionAck.addEventListener("change", canRead);
+  readBtn.addEventListener("click", readShot);
+  ["dragenter", "dragover"].forEach((t) => drop.addEventListener(t, (e) => { e.preventDefault(); drop.classList.add("over"); }));
+  ["dragleave", "drop"].forEach((t) => drop.addEventListener(t, (e) => { e.preventDefault(); drop.classList.remove("over"); }));
+  drop.addEventListener("drop", (e) => { if (e.dataTransfer && e.dataTransfer.files.length) { fileIn.files = e.dataTransfer.files; onFile(); } });
+  const visionBox = h("section", { class: "vision" }, h("h2", {}, "Start from a screenshot or document"),
+    h("p", { class: "meta" }, S.cfg.ai_mode === "mock"
+      ? "Mock mode: files are read locally but no AI model analyses them. You get clearly labelled sample values to replace."
+      : "Upload a screenshot of an email or Canvas page, a PDF, a Word file, or a text or CSV export. Images go to the vision model; documents are read on the server and their text goes to the text model. You review and edit everything before a case is created. It uses one lifetime AI call. A CSV or PDF with several students yields only the first case."),
+    drop, fileIn, preview,
+    h("label", { class: "check" }, visionAck, " This file contains only synthetic data: no real student names, emails, grades or IDs."),
+    h("div", { class: "btnrow" }, readBtn), visionResult);
+
   const submitBtn = h("button", { type: "submit", class: "btn primary big" }, "Create case");
   const form = h("form", { class: "intake", novalidate: true, onsubmit: async (e) => {
     e.preventDefault();
@@ -1081,10 +1181,12 @@ async function intakeView() {
   } },
     summary,
     h("div", { class: "notice warn" }, h("strong", {}, "Synthetic data only. "), "Do not type real student names, emails, phone numbers, links or ID numbers: they are rejected. Nothing is sent to Canvas or email, and the demo cases A to D use built-in records, not this form."),
+    visionBox,
+    h("h2", {}, "Case details"),
     examples.length > 0 && h("div", { class: "btnrow examples" }, h("span", { class: "meta" }, "Load an example:"),
       examples.map((x) => h("button", { type: "button", class: "btn", onclick: () => fill(x.request) }, x.title.split(":")[0]))),
     fieldRow("What are you adding?", mode, null, "mode"),
-    existingRow, studentRow, assignRow, ownerRow,
+    existingRow, studentRow, assignRow, courseRow, ownerRow,
     fieldRow("Channel", channel, null, "message.channel"),
     dirRow, staffRow,
     fieldRow("Message time", msgTs, "Uses the time zone below.", "message.ts"),
@@ -1100,6 +1202,204 @@ async function intakeView() {
   existing.addEventListener("change", () => {});
   toggleMode();
   return view;
+}
+
+// ------------------------------------------------------------------ board (kanban)
+
+const BOARD_COLS = ["New", "TA review", "Awaiting professor", "Awaiting student info", "Closed"];
+const ISSUE_LABEL = { late_flag: "Late flag", score_gap: "Score gap", missing_submission: "Missing submission", other: "Other" };
+// What a drop means. Every move is a real decision: the server still enforces roles, blockers,
+// notes and drafts. There is no way to move a case back to "New".
+const MOVES = {
+  "TA review": [{ action: "hold", label: "Place on hold", note: true }],
+  "Awaiting professor": [{ action: "escalate", label: "Request professor review", note: true }],
+  "Awaiting student info": [{ action: "request_info", label: "Request student information", note: true }],
+  Closed: [{ action: "approve", label: "Approve and close", note: false }, { action: "reject", label: "Reject request", note: true }],
+};
+const canLeave = (c) => c.status !== "Closed" && !c.merged_into;
+const canDropOn = (c, status) => canLeave(c) && status !== c.status && !!MOVES[status];
+function ageText(c) {
+  const t = Date.parse(c.opened_at);
+  if (Number.isNaN(t)) return "";
+  const d = Math.floor((Date.now() - t) / 86400000);
+  return d <= 0 ? "opened today" : `open ${d} d`;
+}
+
+async function boardView() {
+  const cases = await api("/api/cases");
+  S.drag = null;
+  const cols = BOARD_COLS.map((status) => {
+    const items = cases.filter((c) => c.status === status);
+    const list = h("div", { class: "kcards" }, items.map(boardCard), !items.length && h("p", { class: "meta kempty" }, "No cases"));
+    const col = h("section", { class: "kcol", "data-status": status, "aria-labelledby": `kh-${slug(status)}` },
+      h("h2", { id: `kh-${slug(status)}` }, status, " ", h("span", { class: "tabcount", "aria-label": `${items.length} cases` }, items.length)),
+      list);
+    col.addEventListener("dragover", (e) => {
+      const c = S.drag && cases.find((x) => x.id === S.drag);
+      if (c && canDropOn(c, status)) { e.preventDefault(); e.dataTransfer.dropEffect = "move"; col.classList.add("over"); }
+    });
+    col.addEventListener("dragleave", (e) => { if (!col.contains(e.relatedTarget)) col.classList.remove("over"); });
+    col.addEventListener("drop", (e) => {
+      e.preventDefault(); col.classList.remove("over");
+      const c = cases.find((x) => x.id === S.drag);
+      if (c && canDropOn(c, status)) openMoveDialog(c, status);
+    });
+    return col;
+  });
+  return h("div", { class: "page" }, noticeEl(),
+    h("div", { class: "pagehead" }, h("h1", {}, "Board"), h("a", { class: "btn", href: "#/queue" }, "Open the list view")),
+    h("p", { class: "lede" }, "Drag a card to a column, or use its Move menu. Every move is recorded as a decision with your note, and the usual rules still apply. Nothing is sent and no grade changes."),
+    h("ul", { class: "legend" }, Object.keys(ISSUE_LABEL).map((k) => h("li", {}, h("span", { class: `swatch i-${k}` }), ISSUE_LABEL[k]))),
+    h("div", { class: "board" }, cols));
+}
+
+function boardCard(c) {
+  const targets = BOARD_COLS.filter((s) => canDropOn(c, s));
+  const sel = canLeave(c) ? h("label", { class: "move" }, h("span", { class: "sr-only" }, `Move ${c.id} to`),
+    h("select", { class: "input", "aria-label": `Move ${c.id} to`, onchange: (e) => { const v = e.target.value; e.target.value = ""; if (v) openMoveDialog(c, v); } },
+      h("option", { value: "" }, "Move to..."), targets.map((s) => h("option", { value: s }, s)))) : null;
+  const card = h("article", { class: `kcard i-${c.issue}`, draggable: canLeave(c) ? "true" : null, "data-id": c.id },
+    h("a", { class: "caselink", href: `#/case/${c.id}/evidence` }, caseTitle(c)),
+    h("div", { class: "meta" }, h("span", { class: "mono" }, c.id), " · ", h("span", { class: "mono" }, c.student_id)),
+    h("div", { class: "meta" }, `${c.assignment_name} (${c.assignment})`),
+    h("div", { class: "meta" }, c.owner || "Unassigned", " · ", ageText(c)),
+    h("div", { class: "tags" }, h("span", { class: `issue i-${c.issue}` }, h("span", { class: "swatch" }), ISSUE_LABEL[c.issue] || "Other"),
+      c.duplicates.length > 0 && h("span", { class: "tag" }, "Possible duplicate"), c.on_hold && h("span", { class: "tag" }, "On hold")),
+    sel);
+  if (canLeave(c)) {
+    card.addEventListener("dragstart", (e) => { S.drag = c.id; card.classList.add("dragging"); e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setData("text/plain", c.id); });
+    card.addEventListener("dragend", () => { S.drag = null; card.classList.remove("dragging"); document.querySelectorAll(".kcol.over").forEach((x) => x.classList.remove("over")); });
+  }
+  return card;
+}
+
+function openMoveDialog(c, status) {
+  const options = MOVES[status];
+  const dlg = h("dialog", { class: "movedlg", "aria-labelledby": "mv-title" });
+  let choice = options[0];
+  const err = h("div", { role: "alert" });
+  const note = h("textarea", { class: "input", id: "mv-note", rows: 3, "aria-describedby": "mv-help" });
+  const help = h("p", { class: "meta", id: "mv-help" });
+  const confirmBtn = h("button", { type: "submit", class: "btn primary" }, "Record move");
+  const refreshHelp = () => {
+    help.textContent = choice.note ? "A note is required. It is stored in the decision log with your name, role and time."
+      : "Approving closes the case and needs a reviewed reply. If it says a reply is missing, use the Decision screen.";
+    note.setAttribute("aria-required", String(choice.note));
+  };
+  const radios = options.length > 1 ? h("fieldset", { class: "choice" }, h("legend", {}, "What should this move record?"),
+    options.map((o, i) => h("label", { class: "check" }, h("input", { type: "radio", name: "mv-action", value: o.action, checked: i === 0,
+      onchange: () => { choice = o; refreshHelp(); } }), ` ${o.label}`))) : h("p", {}, h("strong", {}, choice.label), ".");
+  refreshHelp();
+  const form = h("form", { method: "dialog", onsubmit: async (e) => {
+    e.preventDefault();
+    if (S.busy) return;
+    err.replaceChildren();
+    if (choice.note && !note.value.trim()) { err.replaceChildren(h("p", { class: "fielderr" }, "Add a note: it is required for this move.")); note.focus(); return; }
+    S.busy = true; confirmBtn.disabled = true; confirmBtn.textContent = "Recording...";
+    try {
+      const out = await api(`/api/cases/${c.id}/decision`, { method: "POST", body: { role: S.role, action: choice.action, note: note.value.trim() } });
+      dlg.close();
+      S.notice = { kind: "success", title: "Moved.", text: `${c.id}: ${c.status} → ${out.case.status}. Logged as "${choice.label}". Nothing was sent. No Canvas change.` };
+      S.busy = false; render();
+    } catch (ex) {
+      S.busy = false; confirmBtn.disabled = false; confirmBtn.textContent = "Record move";
+      err.replaceChildren(h("div", { class: "notice error" }, `Not moved: ${ex.message} `, h("a", { href: `#/case/${c.id}/decision` }, "Open the Decision screen")));
+    }
+  } },
+    h("h2", { id: "mv-title" }, `Move ${c.id} to ${status}?`),
+    h("p", { class: "meta" }, `${caseTitle(c)}. Currently ${c.status}. Acting as ${S.role === "ta" ? "TA" : "Professor"} (demo role).`),
+    radios,
+    h("div", { class: "formrow" }, h("label", { for: "mv-note" }, "Note"), note, help), err,
+    h("div", { class: "btnrow" }, confirmBtn, h("button", { type: "button", class: "btn", onclick: () => dlg.close() }, "Cancel")));
+  dlg.append(form);
+  dlg.addEventListener("close", () => dlg.remove());
+  document.body.append(dlg);
+  dlg.showModal();
+  note.focus();
+}
+
+// ------------------------------------------------------------------ calendar
+
+const OVERDUE_AFTER_DAYS = 7; // this demo's own threshold for "open too long", not a policy
+const DOW = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const MONTH_NAMES = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+const STATE_WORD = { resolved: "resolved", pending: "pending", overdue: "overdue" };
+const ymd = (ts) => ts.slice(0, 10); // the date as recorded (in the timestamp's own time zone)
+
+function caseState(c) {
+  if (c.status === "Closed") return "resolved";
+  const t = Date.parse(c.opened_at);
+  return !Number.isNaN(t) && Date.now() - t > OVERDUE_AFTER_DAYS * 86400000 ? "overdue" : "pending";
+}
+
+function calendarEvents(cases) {
+  const out = [];
+  for (const c of cases) {
+    const state = caseState(c);
+    if (c.deadline) out.push({ date: ymd(c.deadline), type: "Deadline", text: `${c.assignment_name} due ${c.deadline.slice(11, 16)}`, c, state });
+    if (c.opened_at) out.push({ date: ymd(c.opened_at), type: "Case opened", text: "First message arrived", c, state });
+    for (const d of c.decisions) out.push({ date: ymd(d.ts), type: "Decision", text: d.action.replace(/_/g, " "), c, state });
+  }
+  return out;
+}
+
+async function calendarView() {
+  const cases = await api("/api/cases");
+  const events = calendarEvents(cases);
+  const today = new Date();
+  const first = (() => {
+    const m = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}`;
+    if (events.some((e) => e.date.startsWith(m))) return { y: today.getFullYear(), m: today.getMonth() };
+    const latest = events.map((e) => e.date).sort().pop(); // nothing this month: show the latest activity
+    return latest ? { y: +latest.slice(0, 4), m: +latest.slice(5, 7) - 1 } : { y: today.getFullYear(), m: today.getMonth() };
+  })();
+  const st = { y: first.y, m: first.m, sel: null };
+  const heading = h("h2", { "aria-live": "polite", class: "calhead" });
+  const grid = h("div", { class: "calgrid", role: "grid", "aria-label": "Month" });
+  const panel = h("section", { class: "block daypanel", "aria-live": "polite" });
+  const iso = (d) => `${st.y}-${String(st.m + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+  const todayIso = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
+
+  function draw() {
+    heading.textContent = `${MONTH_NAMES[st.m]} ${st.y}`;
+    const lead = new Date(st.y, st.m, 1).getDay(), days = new Date(st.y, st.m + 1, 0).getDate();
+    const cells = DOW.map((d) => h("div", { class: "dow", role: "columnheader" }, d));
+    for (let i = 0; i < lead; i++) cells.push(h("div", { class: "day blank", "aria-hidden": "true" }));
+    for (let d = 1; d <= days; d++) {
+      const date = iso(d), ev = events.filter((e) => e.date === date);
+      const counts = ["resolved", "pending", "overdue"].map((s) => [s, ev.filter((e) => e.state === s).length]).filter(([, n]) => n);
+      const dots = ev.slice(0, 6).map((e) => h("span", { class: `dot d-${e.state}`, title: `${e.type} (${STATE_WORD[e.state]})` }));
+      cells.push(h("button", { type: "button", class: `day${date === todayIso ? " today" : ""}${st.sel === date ? " sel" : ""}`, role: "gridcell",
+        "aria-pressed": String(st.sel === date),
+        "aria-label": `${MONTH_NAMES[st.m]} ${d}, ${st.y}: ${ev.length ? counts.map(([s, n]) => `${n} ${STATE_WORD[s]}`).join(", ") : "no events"}`,
+        onclick: () => { st.sel = date; draw(); } },
+      h("span", { class: "dn" }, String(d)), h("span", { class: "dots" }, dots, ev.length > 6 && h("span", { class: "more" }, `+${ev.length - 6}`))));
+    }
+    grid.replaceChildren(...cells);
+    const list = st.sel ? events.filter((e) => e.date === st.sel) : [];
+    panel.replaceChildren(h("h2", {}, st.sel ? `Events on ${st.sel}` : "Select a day"),
+      !st.sel ? h("p", { class: "muted" }, "Click a date to see its deadlines, new cases and decisions.")
+        : !list.length ? h("p", { class: "muted" }, "Nothing recorded on this day.")
+        : h("ul", { class: "evlist" }, list.map((e) => h("li", {},
+          h("span", { class: `dot d-${e.state}`, "aria-hidden": "true" }), " ", h("strong", {}, e.type), `: ${e.text}. `,
+          h("a", { href: `#/case/${e.c.id}/evidence` }, `${caseTitle(e.c)} (${e.c.id})`), " ", pill(e.c.status),
+          h("span", { class: "meta" }, ` ${STATE_WORD[e.state]}`)))));
+  }
+  const go = (delta) => { const d = new Date(st.y, st.m + delta, 1); st.y = d.getFullYear(); st.m = d.getMonth(); st.sel = null; draw(); };
+  draw();
+  return h("div", { class: "page" }, noticeEl(),
+    h("div", { class: "pagehead" }, h("h1", {}, "Calendar"), h("a", { class: "btn", href: "#/queue" }, "Open the list view")),
+    h("p", { class: "lede" }, "Assignment deadlines, the day each case was opened, and the days decisions were recorded. Dates are shown as recorded."),
+    h("ul", { class: "legend" },
+      h("li", {}, h("span", { class: "dot d-resolved" }), "Resolved: the case is closed"),
+      h("li", {}, h("span", { class: "dot d-pending" }), "Pending: the case is open"),
+      h("li", {}, h("span", { class: "dot d-overdue" }), `Overdue: open more than ${OVERDUE_AFTER_DAYS} days (this demo's own threshold, not a policy)`)),
+    h("div", { class: "calbar" },
+      h("button", { type: "button", class: "btn", "aria-label": "Previous month", onclick: () => go(-1) }, "← Previous"),
+      heading,
+      h("button", { type: "button", class: "btn", "aria-label": "Next month", onclick: () => go(1) }, "Next →"),
+      h("button", { type: "button", class: "btn quiet", onclick: () => { st.y = today.getFullYear(); st.m = today.getMonth(); st.sel = todayIso; draw(); } }, "Today")),
+    grid, panel);
 }
 
 // ------------------------------------------------------------------ boot

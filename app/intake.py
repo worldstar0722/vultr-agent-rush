@@ -112,6 +112,12 @@ class IntakeRequest(_Strict):
     context: ContextIn | None = None
     case_id: str | None = Field(default=None, pattern=r"^CASE-[A-Za-z0-9]{1,6}$")
     owner: str | None = None
+    course: str | None = Field(default=None, max_length=40)  # defaults to the demo course
+    # Provenance only: "screenshot" / "document" mean the form was pre-filled by the model from an
+    # uploaded image / file and then reviewed and submitted by a person.
+    source: Literal["form", "screenshot", "document"] = "form"
+
+    _course = field_validator("course")(lambda v: _no_pii(v) if v else None)
 
     @field_validator("synthetic_ack")
     @classmethod

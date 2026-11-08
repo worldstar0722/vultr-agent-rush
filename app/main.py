@@ -7,9 +7,9 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -191,6 +191,46 @@ def create_app(settings: Settings | None = None, *, llm: LLM | None = None) -> F
     def intake(body: IntakeRequest) -> dict:
         """Create a synthetic case (or add a message to one). No Canvas, no email."""
         return desk.intake(body)
+
+    upload_paths = ("/api/intake/upload", "/api/intake/vision")  # the second is the old name
+
+    @app.middleware("http")
+    async def cap_upload_size(request: Request, call_next):  # type: ignore[no-untyped-def]
+        """Refuse an oversized upload from its Content-Length before it is buffered."""
+        if request.url.path in upload_paths:
+            declared = request.headers.get("content-length", "0")
+            limit = max(settings.ai_max_image_bytes, settings.ai_max_doc_bytes) + 65536
+            if declared.isdigit() and int(declared) > limit:
+                return JSONResponse(
+                    status_code=413,
+                    content={"detail": "The file is too large.", "code": "image_too_large"},
+                )
+        return await call_next(request)
+
+    def intake_upload(
+        request: Request,
+        file: Annotated[UploadFile | None, File()] = None,
+        image: Annotated[UploadFile | None, File()] = None,  # old field name, still accepted
+        synthetic_ack: Annotated[bool, Form()] = False,
+        auto_create: Annotated[bool, Form()] = False,
+    ) -> dict:
+        """Read an uploaded screenshot, PDF, DOCX, text or CSV file and return fields to review.
+
+        Images go to the vision model; documents are parsed locally and their text goes to the text
+        model. Same lifetime budget and per-client throttle as every other AI call. The model, URL
+        and limits are server-side only: this form takes none of them.
+        """
+        up = file or image
+        if up is None:
+            raise HTTPException(422, "Attach a file in the 'file' field.")
+        limit = max(settings.ai_max_image_bytes, settings.ai_max_doc_bytes) + 1
+        data = up.file.read(limit)
+        return desk.vision.extract(
+            data, who(request), synthetic_ack, auto_create, up.filename or "", up.content_type or ""
+        )
+
+    app.post("/api/intake/upload")(intake_upload)
+    app.post("/api/intake/vision", include_in_schema=False)(intake_upload)
 
     @app.get("/api/intake/examples")
     def intake_examples() -> list[dict]:

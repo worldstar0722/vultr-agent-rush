@@ -16,6 +16,7 @@ from app.engine import analyze, classify_issue
 from app.errors import DeskError
 from app.intake import IntakeRequest, to_context
 from app.llm import LLM
+from app.vision import VisionIntake
 
 STATUSES = ["New", "TA review", "Awaiting professor", "Awaiting student info", "Closed"]
 ACTIONS = ["approve", "hold", "reject", "escalate", "request_info"]
@@ -41,6 +42,7 @@ class Desk:
         self.llm = llm
         init_db(settings.db_path)
         self.analyzer = Analyzer(self)
+        self.vision = VisionIntake(self)
         with connect(settings.db_path) as conn:
             empty = conn.execute("SELECT COUNT(*) FROM cases").fetchone()[0] == 0
         if empty:
@@ -82,7 +84,7 @@ class Desk:
                 " status, issue, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
                 (
                     case_id,
-                    fixtures.COURSE,
+                    m.get("course") or fixtures.COURSE,
                     m["assignment"],
                     ctx["name"] if ctx else m["assignment"],
                     m["student"],
@@ -103,7 +105,11 @@ class Desk:
                 "message",
                 m["id"],
                 m["ts"],
-                f"{m['role']} message via {m['channel']} ({m['direction']}) from {m['author']}",
+                f"{m['role']} message via {m['channel']} ({m['direction']}) from {m['author']}"
+                + {
+                    "screenshot": " (read from a screenshot by the AI model, then reviewed by a person)",
+                    "document": " (read from an uploaded document by the AI model, then reviewed by a person)",
+                }.get(m.get("source", ""), ""),
                 m["text"],
                 j(
                     {
@@ -111,6 +117,7 @@ class Desk:
                         "direction": m["direction"],
                         "author": m["author"],
                         "role": m["role"],
+                        "source": m.get("source", "form"),
                     }
                 ),
             ),
@@ -166,6 +173,8 @@ class Desk:
                 "assignment": req.assignment,
                 "ts": m.ts,
                 "owner": req.owner,
+                "course": req.course,
+                "source": req.source,
                 "text": m.text,
             }
             self._import(conn, msg, ctx)
@@ -380,9 +389,23 @@ class Desk:
             "SELECT * FROM duplicates WHERE status='proposed' AND (case_a=? OR case_b=?)",
             (case["id"], case["id"]),
         ).fetchall()
+        inbound = [
+            e["ts"]
+            for e in ev
+            if e["source_type"] == "message" and e["payload"]["direction"] == "inbound"
+        ]
+        decided = conn.execute(
+            "SELECT ts, action FROM decisions WHERE case_id=? ORDER BY id", (case["id"],)
+        ).fetchall()
         return {
             **case,
             "on_hold": bool(case["on_hold"]),
+            # Dates for the board and calendar views (read-only; computed from the records):
+            "deadline": a["deadline"]["ts"] if a["deadline"] else None,
+            "opened_at": min(inbound, key=datetime.fromisoformat)
+            if inbound
+            else case["created_at"],
+            "decisions": [{"ts": d["ts"], "action": d["action"]} for d in decided],
             "channels": sorted(
                 {e["payload"]["channel"] for e in ev if e["source_type"] == "message"}
             ),

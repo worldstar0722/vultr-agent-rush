@@ -29,6 +29,20 @@ Browser (static HTML/JS)  -->  Caddy  -->  FastAPI (app/main.py)
 
 Source text (what people wrote, what policy says) and AI-generated text are stored in separate columns and tables. Evidence ids are unique per case; merging cases copies evidence by ref id without duplicates.
 
+## AI, uploads and budget modules
+
+| Path | Role |
+|---|---|
+| `app/analysis.py` | explicit analysis runs: cache by evidence fingerprint, one in flight per case, real stages, fail-closed validation, labelled fallback |
+| `app/llm.py` | `OpenAICompatLLM` (analysis, image and document extraction), `MockLLM`; redacted errors, optional single retry |
+| `app/schema.py` | strict structure a model reply must have |
+| `app/budget.py` | lifetime attempt reservation, per-client hourly limit, attempt log (kept across demo reset) |
+| `app/vision.py`, `app/uploads.py` | upload intake: type detection from bytes, sandboxed parsing (pdfplumber, python-docx), field normalisation and PII scrubbing |
+| `app/intake.py` | validated synthetic-only case intake |
+| `app/tools.py` | operator commands: `models`, `ai-status`, `reset-ai-budget` |
+
+Tables added: `analysis_runs` (stages, validation, usage, rejected output kept for audit), `ai_usage_total` and `ai_attempt_log` (never cleared by a demo reset), `ai_client_calls`. Old databases are upgraded in place on start.
+
 ## Status flow
 
 `New -> TA review -> Awaiting professor | Awaiting student info -> Closed`. Actions map as: Approve and Reject -> Closed; Hold -> TA review (flagged on hold); Escalate -> Awaiting professor; Request student info -> Awaiting student info. Closed cases accept no further decisions.
@@ -51,7 +65,7 @@ Source text (what people wrote, what policy says) and AI-generated text are stor
 
 ## HTTP API
 
-`GET /health`, `GET /api/config`, `GET /api/models`, `GET /api/cases`, `GET /api/cases/{id}`, `POST|PUT /api/cases/{id}/draft`, `POST /api/cases/{id}/draft/check`, `POST /api/cases/{id}/decision`, `POST /api/cases/{id}/score-recommendation`, `POST /api/duplicates/{id}/confirm|dismiss`, `POST /api/messages/import`, `POST /api/demo/reset?confirm=true`.
+`GET /health`, `GET /api/config`, `GET /api/ai/status`, `POST /api/cases/{id}/analysis`, `POST /api/intake`, `POST /api/intake/upload`, `GET /api/models`, `GET /api/cases`, `GET /api/cases/{id}`, `POST|PUT /api/cases/{id}/draft`, `POST /api/cases/{id}/draft/check`, `POST /api/cases/{id}/decision`, `POST /api/cases/{id}/score-recommendation`, `POST /api/duplicates/{id}/confirm|dismiss`, `POST /api/demo/reset?confirm=true`.
 
 ## Known limits
 

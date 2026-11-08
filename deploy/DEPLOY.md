@@ -23,15 +23,24 @@ curl http://<SERVER_IP>/health
 Expected: `{"status":"ok"}`. Then open `http://<SERVER_IP>/`. The app starts in mock-AI mode with seeded synthetic cases; no key is required.
 
 ## 4. Optional: turn on Vultr Serverless Inference
+
+Live AI is optional and **unverified until you see a real success in the app**. Put secrets only in `.env` on the server (never in cloud-init, git or the browser).
 ```bash
 ssh root@<SERVER_IP>
 cd /opt/gradecase && nano .env
 ```
-Set `VULTR_INFERENCE_API_KEY` (create it in the Vultr console **(verify where)**), restart, and list real model ids:
+1. Set `VULTR_INFERENCE_API_KEY`, then discover the model ids your key can use: `docker compose run --rm app python -m app.tools models` (prints ids only). Set one as `LLM_MODEL`.
+2. Review the caps in `.env.example` and keep or lower them: `AI_LIFETIME_MAX_CALLS` (default 50 attempts, ever), `AI_MAX_PROMPT_BYTES` (32768), `LLM_MAX_TOKENS` (2048), `LLM_REASONING_MAX_TOKENS` (128), `LLM_MAX_RETRIES` (0), `AI_CLIENT_HOURLY_LIMIT` (6). Values above the hard ceilings are clamped.
+3. `docker compose up -d`, then check `curl -s http://localhost/api/ai/status`: expect `mode: configured`, your model, and `last_success_at: null`.
+4. Run **one** analysis from the UI (Decision screen, Run analysis). `/api/ai/status` should now show `last_success_at` and `calls_used: 1`. If the call fails, the UI shows a redacted reason and a labelled rules-only draft; the attempt still counts.
+
+If a call ever fails or times out the app keeps working with the rules-only view.
+
+**The lifetime budget lives in the `gradecase_data` volume.** "Reset demo data" does not clear it and neither does a restart. `docker compose down -v` deletes the volume and therefore resets the counters and the attempt log: do not run it on a deployment with live AI. The only supported reset, after you have approved more spend, is:
 ```bash
-docker compose up -d && curl -s http://localhost/api/models
+docker compose exec app python -m app.tools reset-ai-budget --i-understand-this-reauthorises-spend
 ```
-Put one id into `LLM_MODEL`, then `docker compose up -d` again. If the call ever fails or times out, the UI shows "AI unavailable, rules-only view" and keeps working.
+(The attempt log is kept.) There is no Docker socket mount, no code execution and no sandbox in this app.
 
 ## 5. Redeploy after code changes
 ```bash
@@ -44,5 +53,7 @@ Create a DNS **A record** to the server IP, set `DOMAIN=your.domain` in `.env`, 
 
 ## Troubleshooting
 - Page does not load: firewall group missing port 80, or `docker compose ps` shows a service down; `docker compose logs -f app`.
-- `/api/models` returns 502: wrong key or base URL; the error text is in the response body.
+- `/api/models` returns 502: wrong key or URL; the response gives a short redacted reason (never the key or provider text).
+- Analysis returns 429: `ai_budget_exhausted` (lifetime cap reached: rules-only drafts still work) or `ai_client_throttled` (wait for `Retry-After`).
+- Uploads: PDF/DOCX/text are parsed on the server and need the image's new dependencies (`pdfplumber`, `python-docx`); a rebuild (`docker compose up -d --build`) installs them.
 - Data missing after redeploy: make sure you did not run `docker compose down -v`.

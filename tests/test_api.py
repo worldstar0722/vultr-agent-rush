@@ -40,3 +40,19 @@ def test_importing_the_app_module_has_no_side_effects(tmp_path):
     code = "import app.main"
     subprocess.run([sys.executable, "-c", code], check=True, env={"DB_PATH": str(target)})
     assert not target.parent.exists()
+
+
+def test_case_list_carries_the_dates_the_board_and_calendar_need(client):
+    cases = {c["id"]: c for c in client.get("/api/cases").json()}
+    a = cases["CASE-A"]
+    assert (
+        a["deadline"] == "2026-11-05T23:59:00-07:00"
+    )  # from the deadline record, not the import time
+    assert a["opened_at"] == "2026-11-06T08:05:00-07:00"  # first inbound message, not the seed time
+    assert a["decisions"] == []
+    assert cases["CASE-C"]["deadline"] == "2026-11-06T23:59:00-07:00"
+    client.post(
+        "/api/cases/CASE-A/decision", json={"role": "ta", "action": "escalate", "note": "n"}
+    )
+    decided = {c["id"]: c for c in client.get("/api/cases").json()}["CASE-A"]["decisions"]
+    assert [d["action"] for d in decided] == ["escalate"] and decided[0]["ts"]

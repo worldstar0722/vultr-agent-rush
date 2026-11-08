@@ -16,7 +16,9 @@ Deadline: **Nov 8, afternoon MST** (verify the exact time on the lablab.ai event
 - [ ] Multi-step enterprise workflow: queue, evidence, decision, closing
 - [ ] Backend on a Vultr VM
 - [ ] Human approval step visible (professor approval for Case A)
-- [ ] Vultr Serverless Inference is optional: only claim it if a key is set on the VM and `/api/models` + `LLM_MODEL` are configured; otherwise say "mock AI"
+- [ ] Vultr Serverless Inference is optional. **Only claim live inference after** `/api/ai/status` shows `last_success_at` on the deployed VM (a real run, not a stub). Until then say "mock AI" or "integration implemented, live verification pending".
+- [ ] Live verification done by the operator: first analysis run; a screenshot upload; a PDF/DOCX upload; the 429 budget response; restart keeps the counters (do NOT use `down -v`)
+- [ ] Budget: `AI_LIFETIME_MAX_CALLS` and the per-call caps reviewed and still within the authorised total spend
 
 ## Honesty check (say these out loud in the video)
 - [ ] Synthetic data only; no Canvas integration; no messages are sent; no grade is changed
