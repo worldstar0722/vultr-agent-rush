@@ -6,6 +6,10 @@
   <meta name="color-scheme" content="light">
   <title>GradeCase</title>
   <link rel="stylesheet" href="/static/style.css">
+  <style>
+    /* Shell fallback, kept inline on purpose so the mobile layout never depends on the external file. */
+    @media(max-width:900px){.app{display:flex!important;flex-direction:column!important}.rail{position:static!important;height:auto!important;width:100%!important;flex-direction:row!important;padding:10px 16px!important}}
+  </style>
 </head>
 <body>
   <a class="skip" href="#view">Skip to content</a>

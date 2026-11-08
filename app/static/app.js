@@ -615,7 +615,7 @@ function actionReason(action, perms, hasDraft) {
 
 function analysisStatus(d) {
   const wf = d.workflow, run = wf.latest, ai = d.ai;
-  const stale = wf.stale ? " The evidence changed after this ran; run it again before approving." : "";
+  const stale = !wf.stale ? "" : d.case.status === "Closed" ? " It was generated before the decision was recorded." : " The evidence changed after this ran; run it again before approving.";
   if (!run) {
     if (ai.mode === "mock") return { kind: "info", text: "Not run yet. Mock mode runs a deterministic template locally; no AI model is called." };
     if (ai.mode === "misconfigured") return { kind: "warn", text: "Live AI is not usable: the server has a key but no model id. Use the rules-only draft." };

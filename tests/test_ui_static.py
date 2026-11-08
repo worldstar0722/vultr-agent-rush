@@ -43,3 +43,30 @@ def test_upload_zone_accepts_documents_and_says_so():
     assert "Drop screenshot, PDF, or document" in js
     for needle in ("application/pdf", ".docx", ".csv", "/api/intake/upload"):
         assert needle in js, needle
+
+
+def test_mobile_shell_rules_are_embedded_in_the_page_itself(client):
+    html = client.get("/").text
+    assert "<style>" in html and "@media(max-width:900px)" in html
+    for rule in (
+        ".app{display:flex!important",
+        ".rail{position:static!important",
+        "flex-direction:column!important",
+    ):
+        assert rule in html, rule
+
+
+def test_palette_has_no_beige_and_uses_the_dark_sidebar_and_blue_accent():
+    css = (STATIC / "style.css").read_text().lower()
+    for token in (
+        "--sidebar: #0f172a",
+        "--accent: #2563eb",
+        "--border: #e5e7eb",
+        "--text: #111827",
+        "--muted: #6b7280",
+        "--bg: #f9fafb",
+    ):
+        assert token in css, token
+    for beige in ("#f5f4ef", "#ecebe2", "#fbf3df", "#fdf3e3", "#faf9f5"):
+        assert beige not in css, beige
+    assert "--shadow: 0 1px 3px rgba(0, 0, 0, 0.04)" in css and "box-shadow: var(--shadow)" in css
