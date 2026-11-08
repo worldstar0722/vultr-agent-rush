@@ -38,6 +38,7 @@ Source text (what people wrote, what policy says) and AI-generated text are stor
 - **Blockers** (nobody can Approve/Reject): missing policy, insufficient evidence (unreadable/empty file, student claim with no record), records conflict (recorded late deduction contradicts attempt times).
 - **Gates** (professor only): attempt-basis ambiguity, unexplained score difference, alternate evidence. A professor Approve on the attempt-basis gate must name the counted attempt; it is stored as approval evidence (`APR-<case>-<n>`).
 - Escalate is TA-only. Notes are required for everything except Approve.
+- On a professor approval the stored final reply is made consistent with the decision: the template's "decision pending" sentences are removed, a deterministic statement citing the `APR-` evidence id is added (recommendations only; no Canvas change, nothing sent), and human edits are kept. Text that still claims a pending decision in other words is rejected (409) instead of approved.
 - Score recommendations exist only after a professor approval, are recorded as rows, and never leave the database.
 
 ## AI guardrails (`guardrails.py`)

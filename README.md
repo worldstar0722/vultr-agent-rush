@@ -2,6 +2,8 @@
 
 **A case desk for grading exceptions.** Built for the Vultr: Agent Rush hackathon (lablab.ai x Vultr), Track 2 "Powering the Future of Work".
 
+> **Live demo (HTTP only): http://45.77.185.101** - runs in mock-AI mode on a Vultr VM. See [Deployment status](#deployment-status).
+>
 > **Synthetic demo data only.** No real student records. No grades are changed and no messages are sent. Canvas is not connected.
 
 ## Problem
@@ -24,7 +26,7 @@ GradeCase turns scattered messages into **one case with one evidence bundle**, a
 
 - **Vultr VM**: the whole app (Caddy + FastAPI + SQLite on a Docker volume) runs on one Ubuntu 24.04 instance via `docker compose`. See [deploy/DEPLOY.md](deploy/DEPLOY.md).
 - **Vultr Firewall**: only ports 22, 80 and 443.
-- **Vultr Serverless Inference (optional)**: if `VULTR_INFERENCE_API_KEY` is set, the reply draft is generated through the OpenAI-compatible endpoint. Without a key the app runs in a deterministic mock mode and the UI says so; it only describes itself as using Vultr inference when a key is configured. *TODO: record the model id we choose after checking `/api/models`.*
+- **Vultr Serverless Inference (optional, currently NOT connected)**: if `VULTR_INFERENCE_API_KEY` is set, the reply draft is generated through the OpenAI-compatible endpoint. The current deployment has no key, so it runs in a deterministic mock mode and the UI says so; the app only describes itself as using Vultr inference when a key is configured. *TODO: record the model id we choose after checking `/api/models`.*
 
 ## Architecture
 
@@ -78,9 +80,20 @@ Open http://localhost:8000. Checks: `ruff check . && pytest -q`. "Reset demo dat
 
 Full steps in [deploy/DEPLOY.md](deploy/DEPLOY.md): create a firewall group (22/80/443), create an Ubuntu 24.04 instance with [deploy/cloud-init.yaml](deploy/cloud-init.yaml) as user-data, check `http://<SERVER_IP>/health`. Data persists in the `gradecase_data` Docker volume. cloud-init clones branch `claude/ecstatic-newton-ck2lvo`; switch `BRANCH` to `main` after merge.
 
+## Deployment status
+
+Reported by the team after deploying commit `d6ff215` (the QA below was done on that commit, not on the latest one):
+
+- Live at **http://45.77.185.101** on a Vultr VM, via `docker compose` (app + Caddy).
+- The Docker app container reports healthy, and Caddy serves the app over plain HTTP.
+- A container restart preserved recorded decisions (SQLite on the `gradecase_data` volume).
+- **HTTP only for now.** No domain or HTTPS is configured, so do not enter anything sensitive; the data is synthetic anyway.
+- **Real inference is NOT connected.** No `VULTR_INFERENCE_API_KEY` is set, so the AI runs in deterministic mock mode (no model is called). The Vultr Serverless Inference client exists in the code but has not been exercised against the live API.
+- The VM is paid for with an ordinary signup promotion. We are not claiming hackathon credits.
+
 ## Demo URL / video / slides
 
-- Demo URL: TODO
+- Demo URL: http://45.77.185.101 (HTTP only, mock AI)
 - Demo video: TODO
 - Slides: TODO
 

@@ -10,7 +10,7 @@ from typing import Any
 from app import fixtures, guardrails
 from app.config import Settings
 from app.db import clear_all, connect, init_db, j, row_dict
-from app.drafting import build_template_draft
+from app.drafting import build_template_draft, finalize_reply
 from app.engine import analyze, classify_issue
 from app.llm import LLM
 
@@ -515,20 +515,33 @@ class Desk:
                 valid_attempts = {x["ref_id"] for x in a["attempts"] if x["state"] == "submitted"}
                 if role == "professor" and attempt_item and counted_attempt not in valid_attempts:
                     raise DeskError(400, "Select which attempt counts (counted_attempt)")
+                approval_ref = None
+                if role == "professor":
+                    n = 1 + sum(1 for e in ev if e["source_type"] == "approval")
+                    approval_ref = f"APR-{case_id.split('-', 1)[1]}-{n}"
+                    fixed = finalize_reply(
+                        text, approval_ref, counted_attempt if attempt_item else None
+                    )
+                    if fixed is None:
+                        raise DeskError(
+                            409,
+                            "The reply still says the decision is pending. Edit that sentence "
+                            "or regenerate the draft, then approve again.",
+                        )
+                    text = fixed
                 conn.execute(
                     "UPDATE response_drafts SET body_edited=?, body_final=?, approved_at=?,"
                     " approved_by=? WHERE id=?",
                     (text, text, now(), actor, draft["id"]),
                 )
                 if role == "professor":
-                    n = 1 + sum(1 for e in ev if e["source_type"] == "approval")
                     conn.execute(
                         "INSERT INTO evidence (case_id, source_type, ref_id, ts, summary,"
                         " source_text, payload) VALUES (?,?,?,?,?,?,?)",
                         (
                             case_id,
                             "approval",
-                            f"APR-{case_id.split('-', 1)[1]}-{n}",
+                            approval_ref,
                             now(),
                             f"Professor approval by {actor}",
                             note,

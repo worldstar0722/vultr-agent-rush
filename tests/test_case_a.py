@@ -77,3 +77,55 @@ def test_professor_approval_then_recommendation_only(client):
 def test_score_control_blocked_without_approval(client):
     r = client.post("/api/cases/CASE-A/score-recommendation", json={"role": "professor"})
     assert r.status_code == 409
+
+
+def test_approved_final_reply_matches_the_professor_decision(client):
+    """Regression (deployment QA): open Decision Desk -> TA escalate -> professor approve."""
+    d = client.post("/api/cases/CASE-A/draft").json()  # what opening the Decision Desk does
+    assert "cannot say yet" in d["draft"]["body_ai"]  # the pre-decision draft is pending
+    assert decide(client, "CASE-A", "ta", "escalate", "Needs professor ruling").status_code == 200
+    r = decide(
+        client, "CASE-A", "professor", "approve", "Attempt 1 counts", counted_attempt="ATT-A1"
+    )
+    assert r.status_code == 200
+    draft = r.json()["draft"]
+    final = draft["body_final"]
+    assert r.json()["case"]["status"] == "Closed"
+    # no stale "decision pending" claim in the approved text
+    for stale in ("cannot say yet", "decision for the instructor", "update you here"):
+        assert stale not in final
+    # it cites the approval evidence and says what actually happened
+    assert "[APR-A-1]" in final and "ATT-A1 counts" in final
+    assert "recommendations only" in final
+    assert "no grade has been changed in Canvas" in final
+    assert "no message has been sent" in final
+    assert "was sent" not in final and "has been updated" not in final
+    # human text is preserved; the AI original is untouched; the edit is stored
+    assert "Attempt 1 was submitted at 22:40" in final
+    assert draft["body_ai"] != final and "cannot say yet" in draft["body_ai"]
+    assert draft["body_edited"] == final and draft["approved_by"] == "Prof. Demo"
+
+
+def test_human_edits_are_preserved_in_the_final_reply(client):
+    client.post("/api/cases/CASE-A/draft")
+    edited = "Hi, we checked the records [ATT-A1] [ATT-A2]. Thanks for your patience."
+    r = decide(
+        client, "CASE-A", "professor", "approve", "ok", counted_attempt="ATT-A1", body=edited
+    )
+    final = r.json()["draft"]["body_final"]
+    assert final.startswith(edited) and "[APR-A-1]" in final
+
+
+def test_reply_with_its_own_pending_wording_is_not_silently_approved(client):
+    client.post("/api/cases/CASE-A/draft")
+    stale = "We cannot say yet what will happen [ATT-A1]."
+    r = decide(client, "CASE-A", "professor", "approve", "ok", counted_attempt="ATT-A1", body=stale)
+    assert r.status_code == 409 and "still says the decision is pending" in r.json()["detail"]
+    assert client.get("/api/cases/CASE-A").json()["case"]["status"] == "New"  # nothing changed
+
+
+def test_signoff_stays_last_in_final_reply(client):
+    client.post("/api/cases/CASE-A/draft")
+    r = decide(client, "CASE-A", "professor", "approve", "ok", counted_attempt="ATT-A1")
+    final = r.json()["draft"]["body_final"]
+    assert final.rstrip().endswith("TA team") and final.index("[APR-A-1]") < final.rindex("TA team")
