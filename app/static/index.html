@@ -3,39 +3,30 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Agent Rush</title>
+  <title>GradeCase</title>
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-  <main>
-    <header>
-      <h1 id="name">…</h1>
-      <p id="tagline"></p>
-      <p id="modes" class="modes"></p>
-    </header>
-
-    <form id="form">
-      <textarea id="task" rows="3" placeholder="Describe a task for the agent…" required></textarea>
-      <div class="row">
-        <button id="start" type="submit">Run agent</button>
-        <span class="examples">
-          Try:
-          <button type="button" class="chip" data-task="Run some python code">run code</button>
-          <button type="button" class="chip" data-task="Use python to download a web page from the internet">network (blocked)</button>
-          <button type="button" class="chip" data-task="Run python code that loops forever">timeout (killed)</button>
-          <button type="button" class="chip" data-task="Summarize results and email the team">needs approval</button>
-        </span>
-      </div>
-    </form>
-
-    <section id="approval" hidden>
-      <p><strong>Approval needed.</strong> <span id="approval-text"></span></p>
-      <button id="approve" class="ok">Approve</button>
-      <button id="reject" class="no">Reject</button>
-    </section>
-
-    <ol id="timeline"></ol>
-  </main>
+  <div id="banner" role="status">
+    Synthetic demo data. No real student records. No grades are changed and no messages are sent.
+  </div>
+  <header class="top">
+    <div class="brand">
+      <strong id="name">GradeCase</strong>
+      <span id="tagline" class="muted"></span>
+    </div>
+    <nav id="nav" aria-label="Screens"></nav>
+    <div class="role" role="group" aria-label="Demo role switch">
+      <span class="muted small">Demo role switch - not real access control</span>
+      <button id="role-ta" type="button">TA</button>
+      <button id="role-professor" type="button">Professor</button>
+    </div>
+  </header>
+  <main id="view"></main>
+  <footer class="small muted">
+    <span id="mode"></span>
+    <button id="reset" type="button" class="link">Reset demo data</button>
+  </footer>
   <script src="/static/app.js"></script>
 </body>
 </html>

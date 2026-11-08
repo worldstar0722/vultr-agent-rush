@@ -1,70 +1,103 @@
-# TODO: Product Name
+# GradeCase
 
-> TODO: one-line tagline. (Also set `PRODUCT_NAME` / `PRODUCT_TAGLINE` in `.env` for the UI.)
+**A case desk for grading exceptions.** Built for the Vultr: Agent Rush hackathon (lablab.ai x Vultr), Track 2 "Powering the Future of Work".
 
-Starter for our entry in the **Vultr: Agent Rush** hackathon (lablab.ai x Vultr).
-The topic is not chosen yet; everything marked `TODO` must be filled in once it is.
+> **Synthetic demo data only.** No real student records. No grades are changed and no messages are sent. Canvas is not connected.
 
-## Overview (TODO)
+## Problem
 
-TODO: 3-4 sentences. Who has the problem, what the agent does, why it matters (Business Value).
+When a student writes "I submitted on time but it says late" or "I got 0", a TA or professor has to rebuild the story by hand: the same complaint arrives in the LMS inbox, by email and as a submission comment; the facts live in four places (attempt log, deadline, late policy, rubric and gradebook); and a late-policy exception can only be granted by the professor. Replies get duplicated, evidence is lost, and nobody can later say who decided what.
 
-## Track (TODO)
+## Solution
 
-TODO: pick one and delete the other.
+GradeCase turns scattered messages into **one case with one evidence bundle**, and keeps a human in every decision.
 
-- **Track 1 - Blast Radius Zero**: agent that writes/runs code or drives a browser inside an isolated sandbox. Uses `app/sandbox/` and Vultr Serverless Inference. The demo must show one *containment moment* (a red `blocked` event).
-- **Track 2 - Powering the Future of Work**: multi-step enterprise workflow on a Vultr VM with a human approval step. Uses the approval gate (`requires_approval` tools). Serverless Inference is optional.
+- **Unified queue and duplicate detection.** Messages from `canvas_inbox`, `email` and `submission_comment` become cases. Cases with the same student, course, assignment and issue are *proposed* as duplicates; a TA confirms any merge. The same student with a different assignment is never proposed.
+- **Evidence timeline with stable source IDs** (`ATT-A1`, `RUB-B-row2`, `POL-LATE-v1`). "Not submitted", "unreadable", "empty file" and "alternate evidence" are separate states. A missing professor approval or unreadable file shows an "Insufficient evidence" warning.
+- **Score-state reconciliation by rules.** Rubric total, entered score, late deduction, final score and graded-vs-posted are shown separately. Differences are computed, never auto-corrected.
+- **Approval routing.** New, TA review, Awaiting professor, Awaiting student info, Closed. A student request alone never approves a waiver. Policy exceptions and score changes route to the professor. A missing policy or conflicting records puts the case on hold.
+- **Grounded reply draft.** The draft separates *verified facts* (with evidence IDs) from *unverified* statements. A human edits and approves it, a decision log entry (who, role, action, time, note) is stored, and the screen says "Draft only - not sent".
 
-## Vultr architecture
+**Code computes, AI drafts.** Times, lateness and scores come from `app/engine.py`. The optional AI only classifies, summarizes and drafts, and its output is checked by `app/guardrails.py` (citations must exist; numbers and times that conflict with the code are flagged "Needs verification" next to the code value; promises of a regrade are flagged).
+
+## How it uses Vultr
+
+- **Vultr VM**: the whole app (Caddy + FastAPI + SQLite on a Docker volume) runs on one Ubuntu 24.04 instance via `docker compose`. See [deploy/DEPLOY.md](deploy/DEPLOY.md).
+- **Vultr Firewall**: only ports 22, 80 and 443.
+- **Vultr Serverless Inference (optional)**: if `VULTR_INFERENCE_API_KEY` is set, the reply draft is generated through the OpenAI-compatible endpoint. Without a key the app runs in a deterministic mock mode and the UI says so; it only describes itself as using Vultr inference when a key is configured. *TODO: record the model id we choose after checking `/api/models`.*
+
+## Architecture
 
 ```mermaid
 flowchart LR
-    B[Browser] -->|HTTPS / HTTP| C[Caddy reverse proxy]
+    B[Browser: queue, evidence, decision desk] -->|HTTP / HTTPS| C[Caddy]
     subgraph VM["Vultr VM (Ubuntu 24.04, docker compose)"]
-        C --> A[FastAPI app<br/>agent loop + SSE]
-        A -->|docker run --network none<br/>read-only, non-root, limits| S[(Throwaway sandbox container)]
+        C --> A[FastAPI app]
+        A --> R[Rule engine: times, lateness, scores]
+        A --> G[Guardrails: citations, number checks]
+        A --> D[(SQLite on Docker volume /data)]
     end
-    A -->|OpenAI-compatible API| I[Vultr Serverless Inference<br/>api.vultrinference.com/v1]
+    A -. optional, key set .-> I[Vultr Serverless Inference<br/>OpenAI-compatible]
+    F[Synthetic fixtures] --> A
 ```
 
-More detail in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+Details and the data model: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
-## How we use Vultr
+### Trust boundaries
 
-- **Vultr VM (compute instance)** hosts the whole stack with `docker compose` (Caddy + FastAPI). See [deploy/DEPLOY.md](deploy/DEPLOY.md). *TODO: verify the exact product name in the console.*
-- **Vultr Firewall** group allows only ports 22, 80 and 443 to the VM.
-- **Vultr Serverless Inference** is the LLM behind planning and verification (`app/llm.py`, OpenAI-compatible, base URL `https://api.vultrinference.com/v1`). `GET /api/models` lists the models actually available to our key. *TODO: record which model we chose and why.*
-- TODO: anything else we end up using (object storage, managed DB, ...).
+| Component | Trusted to | Not trusted to |
+|---|---|---|
+| Rule engine (code) | compute times, deductions, score differences, routing | interpret ambiguous policy |
+| AI (optional) | classify, summarize, draft wording | produce numbers, decide policy, promise outcomes |
+| Guardrails | reject unknown citations, flag number/time conflicts and commitments | replace human review |
+| Student/LMS text | be shown as quoted source text | be followed as instructions (kept in separate `source_text` fields, passed to the model as data) |
+| Human TA / professor | decide and approve | (demo role switch is **not** access control) |
+| GradeCase | record recommendations | write to Canvas or send messages (neither exists) |
 
-## Run locally (mock mode, no credentials)
+## Demo script (2-3 minutes, Case A)
+
+1. **Queue (20s).** Open the app. Point at the banner. Case A (`CASE-A`, canvas inbox) and `CASE-A2` (email) both carry a *Duplicate candidate* badge; `CASE-D` (same student, HW2) does not. Click **Confirm merge** as TA: evidence combines into `CASE-A` and the merge is logged.
+2. **Evidence View (45s).** Open `CASE-A`. Attempt 1 at 22:40 is 79 min early; attempt 2 at 00:10 is 11 min late; the 2-point late deduction was applied because the newest attempt is graded. Score table shows rubric total 9, deduction 2, final 7, entered 7, posted 7 with no differences. Warning: "Insufficient evidence: no professor approval on file". Review item: "Confirm whether ATT-A1 counts", routed to the professor.
+3. **Decision Desk as TA (45s).** Open the draft: verified facts cite `ATT-A1`, `ATT-A2`, `SCORE-A`; the policy question is listed as unverified; the text does not say what the outcome will be. **Approve** and **Reject** are disabled (professor-only). Click **Escalate to professor** with a note: status becomes Awaiting professor, logged.
+4. **Professor (45s).** Flip the role switch to Professor. Select counted attempt `ATT-A1`, add a note, **Approve**. Status Closed; `APR-A-1` appears as approval evidence; **Apply score change** becomes enabled and records "7 -> 9, recommendation only, not applied in Canvas". Show the decision log.
+5. **Wrap (15s).** Open `CASE-C`: policy `POL-LATE-v2` is missing and the emailed file cannot be found, so Approve is blocked and the draft promises nothing.
+
+## Run locally (mock AI, no credentials)
 
 Needs Python 3.12+.
 
 ```bash
 python -m venv .venv && source .venv/bin/activate && pip install -r requirements-dev.txt
+export DB_PATH=./gradecase.db
 uvicorn app.main:app --reload
-# open http://localhost:8000 and click one of the "Try:" chips
 ```
 
-Run the checks: `ruff check . && pytest -q`.
-
-With no `VULTR_INFERENCE_API_KEY` the LLM is a deterministic mock and the sandbox is a mock, so the whole flow (timeline, red blocked event, approve/reject) works offline. To use real inference: `cp .env.example .env`, set the key, run `curl localhost:8000/api/models`, put a real model id in `LLM_MODEL`, then restart (load the file with e.g. `set -a; source .env; set +a`).
+Open http://localhost:8000. Checks: `ruff check . && pytest -q`. "Reset demo data" in the footer restores the fixtures. To try real inference set `VULTR_INFERENCE_API_KEY`, call `GET /api/models`, then set `LLM_MODEL` (see `.env.example`).
 
 ## Deploy to Vultr
 
-Step by step in [deploy/DEPLOY.md](deploy/DEPLOY.md). Short version: create an Ubuntu 24.04 instance with `deploy/cloud-init.yaml` as user-data, attach a firewall group (22/80/443), SSH in, put the key in `/opt/agent-rush/.env`, run `docker compose up -d --build`.
+Full steps in [deploy/DEPLOY.md](deploy/DEPLOY.md): create a firewall group (22/80/443), create an Ubuntu 24.04 instance with [deploy/cloud-init.yaml](deploy/cloud-init.yaml) as user-data, check `http://<SERVER_IP>/health`. Data persists in the `gradecase_data` Docker volume. cloud-init clones branch `claude/ecstatic-newton-ck2lvo`; switch `BRANCH` to `main` after merge.
 
-## Demo URL / Demo video / Slides
+## Demo URL / video / slides
 
 - Demo URL: TODO
 - Demo video: TODO
 - Slides: TODO
 
+## Limitations
+
+- **Synthetic data only.** Do not load real student records. Using GradeCase with real data requires FERPA and institutional review (data handling, retention, access control, vendor review) that has **not** been done.
+- **Demo roles are not access control.** The TA / Professor switch is a UI label that the API trusts; there is no login.
+- **No Canvas integration.** Messages and course data come from fixtures; nothing is read from or written to Canvas. Canvas would stay the system of record in a real deployment.
+- **No sending.** Replies are drafts. No email or LMS message is sent.
+- Assignment for a message comes from fixture metadata; real inference of the assignment is future work.
+- Late policy rules handled: flat percentage within a window and "newest attempt graded". Other policies are not modelled; unknown policies put the case on hold.
+- Single worker and SQLite: fine for a demo, not for production.
+
 ## Team
 
-- TODO: Name 1 - role - links
-- TODO: Name 2 - role - links
+- TODO: Name 1 - role
+- TODO: Name 2 - role
 
 ## License
 

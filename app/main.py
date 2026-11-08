@@ -2,50 +2,60 @@
 
 from __future__ import annotations
 
-import asyncio
-import json
-from collections.abc import AsyncIterator
 from pathlib import Path
+from typing import Any
 
-from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi import FastAPI, HTTPException, Query
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
-from app.agent import RunManager, ToolRegistry, build_default_registry
 from app.config import Settings
-from app.events import TERMINAL, EventStore, InMemoryEventStore
 from app.llm import LLM, LLMError, get_llm
-from app.sandbox import SandboxRunner, get_runner
+from app.service import Desk, DeskError
 
 STATIC_DIR = Path(__file__).parent / "static"
 
 
-class RunRequest(BaseModel):
-    task: str = Field(min_length=1, max_length=2000)
+class DecisionBody(BaseModel):
+    role: str
+    action: str
+    note: str = ""
+    counted_attempt: str | None = None
+    body: str | None = None
 
 
-class ApprovalRequest(BaseModel):
-    approved: bool
+class RoleBody(BaseModel):
+    role: str
 
 
-def create_app(
-    settings: Settings | None = None,
-    *,
-    llm: LLM | None = None,
-    store: EventStore | None = None,
-    registry: ToolRegistry | None = None,
-    runner: SandboxRunner | None = None,
-) -> FastAPI:
-    """App factory. Every dependency can be overridden (the tests do this)."""
+class DraftBody(BaseModel):
+    body: str
+
+
+class ImportBody(BaseModel):
+    id: str
+    channel: str
+    direction: str = "inbound"
+    author: str
+    role: str = "student"
+    student: str
+    assignment: str
+    ts: str
+    text: str
+    case_id: str | None = None
+    owner: str | None = None
+
+
+def create_app(settings: Settings | None = None, *, llm: LLM | None = None) -> FastAPI:
     settings = settings or Settings.from_env()
     llm = llm or get_llm(settings)
-    store = store or InMemoryEventStore()
-    runner = runner or get_runner(settings)
-    registry = registry or build_default_registry(runner)
-    manager = RunManager(store, llm, registry, settings)
-
+    desk = Desk(settings, llm)
     app = FastAPI(title=settings.product_name)
+
+    @app.exception_handler(DeskError)
+    async def desk_error(_: Any, exc: DeskError) -> JSONResponse:
+        return JSONResponse(status_code=exc.status, content={"detail": exc.message})
 
     @app.get("/health")
     def health() -> dict:
@@ -53,74 +63,77 @@ def create_app(
 
     @app.get("/api/config")
     def config() -> dict:
-        """What the frontend needs: branding + which modes are active."""
         return {
             "product_name": settings.product_name,
             "product_tagline": settings.product_tagline,
+            # Only claim Vultr inference when a key is configured.
             "llm_mode": "mock" if llm.mock else "vultr-inference",
             "model": settings.model or None,
-            "sandbox": runner.name,
+            "banner": "Synthetic demo data. No real student records. "
+            "No grades are changed and no messages are sent.",
         }
 
     @app.get("/api/models")
     def models() -> dict:
         try:
             return llm.models()
-        except (LLMError, OSError) as exc:  # OSError covers httpx connection failures
-            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        except LLMError as exc:
+            raise HTTPException(502, str(exc)) from exc
 
-    @app.post("/api/runs", status_code=201)
-    def create_run(body: RunRequest) -> dict:
-        run = manager.start(body.task)
-        return {"id": run.id, "status": run.status}
+    @app.get("/api/cases")
+    def list_cases(
+        status: str | None = None,
+        owner: str | None = None,
+        channel: str | None = None,
+        duplicates: bool = False,
+        include_merged: bool = False,
+    ) -> list[dict]:
+        return desk.list_cases(status, owner, channel, duplicates, include_merged)
 
-    @app.get("/api/runs/{run_id}")
-    def get_run(run_id: str) -> dict:
-        run = store.get_run(run_id)
-        if run is None:
-            raise HTTPException(404, "run not found")
-        return {"id": run.id, "task": run.task, "status": run.status}
+    @app.get("/api/cases/{case_id}")
+    def case_detail(case_id: str) -> dict:
+        return desk.case_detail(case_id)
 
-    @app.get("/api/runs/{run_id}/events")
-    async def run_events(run_id: str, request: Request) -> StreamingResponse:
-        """Server-Sent Events. Replays the whole log, then streams new events until the
-        run finishes. Supports Last-Event-ID so a browser reconnect doesn't duplicate."""
-        if store.get_run(run_id) is None:
-            raise HTTPException(404, "run not found")
-        try:
-            last_id = int(request.headers.get("last-event-id", "0"))
-        except ValueError:
-            last_id = 0
+    @app.post("/api/cases/{case_id}/draft")
+    def generate_draft(case_id: str) -> dict:
+        return desk.generate_draft(case_id)
 
-        async def stream() -> AsyncIterator[str]:
-            sent = last_id
-            while True:
-                # Read status BEFORE events so we never miss a final event.
-                run = store.get_run(run_id)
-                finished = run is None or run.status in TERMINAL
-                for ev in store.events(run_id, after=sent):
-                    sent = ev.id
-                    yield f"id: {ev.id}\ndata: {json.dumps(ev.to_dict())}\n\n"
-                if finished:
-                    yield "event: end\ndata: {}\n\n"
-                    return
-                if await request.is_disconnected():
-                    return
-                await asyncio.sleep(0.15)
+    @app.put("/api/cases/{case_id}/draft")
+    def save_draft(case_id: str, body: DraftBody) -> dict:
+        return desk.save_draft(case_id, body.body)
 
-        return StreamingResponse(
-            stream(),
-            media_type="text/event-stream",
-            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    @app.post("/api/cases/{case_id}/draft/check")
+    def check_draft(case_id: str, body: DraftBody) -> dict:
+        return {"flags": desk.check_body(case_id, body.body)}
+
+    @app.post("/api/cases/{case_id}/decision")
+    def decide(case_id: str, body: DecisionBody) -> dict:
+        return desk.decide(
+            case_id, body.role, body.action, body.note, body.counted_attempt, body.body
         )
 
-    @app.post("/api/runs/{run_id}/approve")
-    def approve(run_id: str, body: ApprovalRequest) -> dict:
-        if store.get_run(run_id) is None:
-            raise HTTPException(404, "run not found")
-        if not manager.approve(run_id, body.approved):
-            raise HTTPException(409, "run is not waiting for approval")
-        return {"ok": True, "approved": body.approved}
+    @app.post("/api/cases/{case_id}/score-recommendation")
+    def score_recommendation(case_id: str, body: RoleBody) -> dict:
+        return desk.record_score_recommendation(case_id, body.role)
+
+    @app.post("/api/duplicates/{dup_id}/confirm")
+    def confirm_duplicate(dup_id: int, body: RoleBody) -> dict:
+        return desk.resolve_duplicate(dup_id, body.role, True)
+
+    @app.post("/api/duplicates/{dup_id}/dismiss")
+    def dismiss_duplicate(dup_id: int, body: RoleBody) -> dict:
+        return desk.resolve_duplicate(dup_id, body.role, False)
+
+    @app.post("/api/messages/import", status_code=201)
+    def import_message(body: ImportBody) -> dict:
+        return {"case_id": desk.import_message(body.model_dump())}
+
+    @app.post("/api/demo/reset")
+    def reset(confirm: bool = Query(False)) -> dict:
+        if not confirm:
+            raise HTTPException(400, "pass ?confirm=true to reset the demo data")
+        desk.seed(reset=True)
+        return {"ok": True}
 
     @app.get("/", include_in_schema=False)
     def index() -> FileResponse:

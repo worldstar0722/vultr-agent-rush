@@ -1,61 +1,57 @@
 # Architecture
 
 ```
-Browser (static HTML/JS)  --HTTP-->  Caddy  -->  FastAPI (app/main.py)
-                                                   |-- RunManager: 1 thread per run
-                                                   |-- Agent loop: plan -> act -> verify
-                                                   |-- EventStore (in memory) <-- SSE stream to browser
-                                                   |-- LLM client --> Vultr Serverless Inference
-                                                   `-- Sandbox runner --> docker run (throwaway container)
+Browser (static HTML/JS)  -->  Caddy  -->  FastAPI (app/main.py)
+                                              |-- service.py   case desk operations
+                                              |-- engine.py    ALL times, lateness, scores, routing (pure functions)
+                                              |-- guardrails.py checks on AI / human reply text
+                                              |-- llm.py       MockLLM | OpenAI-compatible client (optional)
+                                              `-- db.py        SQLite file on a Docker volume
 ```
 
 ## Code map
 
-| Path | What it does |
+| Path | Role |
 |---|---|
-| `app/main.py` | FastAPI app factory and all HTTP endpoints |
-| `app/config.py` | All settings from env vars (+ product name/tagline placeholder) |
-| `app/llm.py` | `MockLLM` and `OpenAICompatLLM` (same interface: `plan`, `verify`, `models`) |
-| `app/events.py` | Event types and the `EventStore` interface (in-memory implementation) |
-| `app/agent/loop.py` | The plan -> act -> verify loop with limits |
-| `app/agent/tools.py` | Tool registry + 3 demo tools to replace |
-| `app/agent/approvals.py` | Pause/resume gate for human approval |
-| `app/sandbox/runner.py` | Docker sandbox and mock sandbox |
-| `app/static/` | The one-page UI |
+| `app/main.py` | HTTP API and static page |
+| `app/service.py` | import, duplicate proposals, decisions, drafts (`Desk`) |
+| `app/engine.py` | `analyze(evidence)` -> attempts vs deadline, score state, warnings, blockers, gates, suggested action |
+| `app/guardrails.py` | citation check, number/time conflict check, commitment check |
+| `app/drafting.py` | deterministic reply template (mock AI and AI-failure fallback) |
+| `app/llm.py` | `MockLLM`, `OpenAICompatLLM` (Vultr Serverless Inference), 20s default timeout |
+| `app/fixtures.py` | synthetic course DEMO 3060: cases A, B, C, D, policy `POL-LATE-v1` |
+| `app/db.py` | schema and connection helper |
+| `app/static/` | Case Queue, Evidence View, Decision Desk |
+
+## Data model (SQLite)
+
+`cases` (course, assignment, student pseudo-id, owner, status) 1-N `evidence` (source type, ref id, timestamp, summary, **source_text**, payload) ; `recommendations` (source rules/ai/score_change, rationale, uncertainty, evidence ids, policy version) ; `decisions` (actor, role, action, timestamp, note, from/to status) ; `response_drafts` (**body_ai**, body_edited, body_final, verified, unverified, flags, ai_status) ; `review_items` ; `duplicates`.
+
+Source text (what people wrote, what policy says) and AI-generated text are stored in separate columns and tables. Evidence ids are unique per case; merging cases copies evidence by ref id without duplicates.
+
+## Status flow
+
+`New -> TA review -> Awaiting professor | Awaiting student info -> Closed`. Actions map as: Approve and Reject -> Closed; Hold -> TA review (flagged on hold); Escalate -> Awaiting professor; Request student info -> Awaiting student info. Closed cases accept no further decisions.
+
+## Rules that gate decisions (`engine.py`, `service.permissions`)
+
+- **Blockers** (nobody can Approve/Reject): missing policy, insufficient evidence (unreadable/empty file, student claim with no record), records conflict (recorded late deduction contradicts attempt times).
+- **Gates** (professor only): attempt-basis ambiguity, unexplained score difference, alternate evidence. A professor Approve on the attempt-basis gate must name the counted attempt; it is stored as approval evidence (`APR-<case>-<n>`).
+- Escalate is TA-only. Notes are required for everything except Approve.
+- Score recommendations exist only after a professor approval, are recorded as rows, and never leave the database.
+
+## AI guardrails (`guardrails.py`)
+
+1. Citations must exist in the case's evidence; unknown ids (including policies) are removed and flagged; a "verified" claim left without citations becomes "unverified".
+2. Arithmetic, labelled scores (rubric total, entered, posted, final, deduction), minutes and clock times in AI text are compared with the engine; conflicts are flagged with the code value.
+3. Commitment language (will regrade, waive, change the grade) is flagged.
+4. The same checks run on the human-edited text at approval; flagged text cannot be approved.
+5. On any LLM exception or timeout the draft falls back to the rules-only template and the UI says "AI unavailable, rules-only view".
 
 ## HTTP API
 
-| Endpoint | Purpose |
-|---|---|
-| `GET /health` | Liveness |
-| `GET /api/config` | Branding + active modes (used by the UI) |
-| `GET /api/models` | Proxies the provider's model list |
-| `POST /api/runs` `{task}` | Start a run, returns `{id}` |
-| `GET /api/runs/{id}` | Run status: `running`, `waiting_approval`, `done`, `failed` |
-| `GET /api/runs/{id}/events` | SSE: replays the log then streams; final `event: end` |
-| `POST /api/runs/{id}/approve` `{approved}` | Resolve a pending approval (409 if none) |
+`GET /health`, `GET /api/config`, `GET /api/models`, `GET /api/cases`, `GET /api/cases/{id}`, `POST|PUT /api/cases/{id}/draft`, `POST /api/cases/{id}/draft/check`, `POST /api/cases/{id}/decision`, `POST /api/cases/{id}/score-recommendation`, `POST /api/duplicates/{id}/confirm|dismiss`, `POST /api/messages/import`, `POST /api/demo/reset?confirm=true`.
 
-## Event types
+## Known limits
 
-`plan`, `tool_call`, `tool_result`, `verify`, `approval_requested`, `approval_granted`, `approval_denied`, `blocked`, `error`, `done`. Each has `id` (per-run sequence), `run_id`, `type`, `data`, `ts`.
-
-## Agent loop rules
-
-- `MAX_STEPS` caps total tool executions per run, retries included -> run fails with an `error`.
-- Each planned step: 1 attempt + up to `MAX_RETRIES` (3) retries when `verify` says not ok; then the run fails.
-- `requires_approval` tools: status becomes `waiting_approval`, the thread blocks until `POST .../approve` or `APPROVAL_TIMEOUT_SECONDS` (then auto-reject). Asked before every attempt. Reject = step skipped, run continues.
-- A tool result with `blocked` produces a `blocked` event; being contained counts as success and is not retried.
-
-## Sandbox (Track 1)
-
-Per run: `docker run -i --network none --read-only --tmpfs /tmp --user 65534 --cpus --memory --pids-limit --cap-drop ALL --security-opt no-new-privileges`, wall-clock timeout, container force-removed afterwards. The code is piped over stdin, so **no host directory is mounted at all**. Blocked reasons come from: timeout, exit 137 + `OOMKilled`, and known error strings for network / read-only-fs attempts (heuristic: see `_NETWORK_HINTS`).
-
-Caveats to be honest about in the demo/slides:
-- When the app itself runs in a container, starting sandboxes needs the host Docker socket, which is root-equivalent on the VM. Use a disposable VM. A stronger design would run sandboxes through a separate unprivileged service or gVisor/Firecracker (not done here).
-- `SANDBOX_ENABLED=false` (default) or no reachable Docker -> `MockSandbox`, which executes nothing.
-
-## Swapping things
-
-- **Persistence**: implement the 5 methods of `EventStore` (e.g. SQLite) and pass `store=` to `create_app`.
-- **Tools**: edit `build_default_registry` in `app/agent/tools.py`.
-- **Multiple workers**: the in-memory store and approval gate are per-process; run a single uvicorn worker (the default).
+Role in requests is trusted (demo only). One uvicorn worker. The guardrail number checks are pattern-based and will not catch every phrasing.

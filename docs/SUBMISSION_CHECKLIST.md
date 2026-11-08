@@ -1,42 +1,38 @@
 # Submission checklist
 
-Deadline: **Nov 8, afternoon MST** (verify exact time on the lablab.ai event page). Tick items as you go.
+Deadline: **Nov 8, afternoon MST** (verify the exact time on the lablab.ai event page).
 
 ## Required deliverables
+- [ ] Public GitHub repo (check in an incognito window); PR merged to `main`, then set `BRANCH=main` in `deploy/cloud-init.yaml`
+- [ ] README explains the Vultr architecture, trust boundaries, demo script, limitations
+- [ ] Deployment on a Vultr VM documented and tested once from scratch (`deploy/DEPLOY.md`)
+- [ ] Public demo URL (open from a phone on mobile data); `/health` returns ok
+- [ ] Demo video (2-3 min, follow the README demo script, record from the deployed app)
+- [ ] Slides
+- [ ] Team and project description entered on lablab.ai
+- [ ] No secrets in the repo (`.env` is gitignored; no key in cloud-init)
 
-- [ ] **Public GitHub repo** (check it is public in an incognito window)
-- [ ] README explains the **Vultr architecture** (diagram is in README; update it if the design changes)
-- [ ] README documents **deployment on a Vultr VM** (`deploy/DEPLOY.md` works from scratch - test it once)
-- [ ] **Public demo URL** on the Vultr VM (open it from your phone on mobile data)
-- [ ] **Demo video** uploaded, link in README
-- [ ] **Slides** done, link in README
-- [ ] Team members and project description entered on the lablab.ai submission form
-- [ ] No secrets in the repo (`git log -p | grep -i key`; `.env` is gitignored)
+## Track 2 requirements
+- [ ] Multi-step enterprise workflow: queue, evidence, decision, closing
+- [ ] Backend on a Vultr VM
+- [ ] Human approval step visible (professor approval for Case A)
+- [ ] Vultr Serverless Inference is optional: only claim it if a key is set on the VM and `/api/models` + `LLM_MODEL` are configured; otherwise say "mock AI"
 
-## Track requirements
+## Honesty check (say these out loud in the video)
+- [ ] Synthetic data only; no Canvas integration; no messages are sent; no grade is changed
+- [ ] Demo role switch is not access control
+- [ ] FERPA / institutional review is required before any real data
 
-Track 1 - Blast Radius Zero
-- [ ] Uses Vultr Serverless Inference (real key, `LLM_MODEL` set from `/api/models`)
-- [ ] `SANDBOX_ENABLED=true` on the VM and the real Docker sandbox works (`docker pull` done)
-- [ ] Demo shows one clear **containment moment** (red `blocked` event)
-
-Track 2 - Powering the Future of Work
-- [ ] Multi-step enterprise workflow, backend on a Vultr VM
-- [ ] Human approval step visible in the demo
-- [ ] (Optional) Serverless Inference used
-
-## Judging criteria -> what to show
-
-| Criterion | What judges look for | Our evidence (TODO) |
-|---|---|---|
-| Application of Technology | Real use of Vultr (VM, Serverless Inference), solid agent design | Architecture diagram; model chosen from `/api/models`; plan/act/verify timeline |
-| Presentation | Clear story, working live demo, polished video/slides | 2-3 min video script; rehearsed demo; one-line pitch |
-| Business Value | A real user with a real problem; why it's worth paying for | Target user, pain, cost/time saved (TODO: numbers with sources) |
-| Originality | Something fresh, not a generic chatbot | What is different about our tools / safety story (TODO) |
+## Judging criteria
+| Criterion | Evidence to show |
+|---|---|
+| Application of Technology | Code-computed evidence vs AI drafting split; guardrails (fake citation removed, `9+1=11` flagged); SQLite on a Docker volume surviving restart; Vultr VM + firewall; optional Serverless Inference |
+| Presentation | Case A walkthrough in 2-3 minutes; clear role switch; readable UI; rehearsed demo |
+| Business Value | Real pain: duplicated replies, scattered evidence, untracked exception decisions. TODO: numbers (time per case, cases per term) with sources or labelled estimates |
+| Originality | Case-management layer on top of the LMS instead of another grading chatbot; AI cannot approve or change anything; professor-only exceptions |
 
 ## Final hour
-
 - [ ] Fresh clone + `docker compose up -d --build` works on a clean VM
-- [ ] Demo URL still up; firewall only exposes 22/80/443
-- [ ] Record the video from the *deployed* app, not localhost
-- [ ] Submit early; do not wait for the last minute
+- [ ] `docker compose restart` keeps decisions (volume check); "Reset demo data" before recording
+- [ ] Demo URL still up; firewall exposes only 22/80/443
+- [ ] Submit early

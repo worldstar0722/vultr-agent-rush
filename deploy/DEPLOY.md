@@ -1,51 +1,48 @@
-# Deploy to a Vultr VM
+# Deploy GradeCase to a Vultr VM
 
-Console wording changes; anything marked **(verify in console)** must be checked in the Vultr UI. We do not state prices or plan names here: pick the smallest option that fits and check cost in the console.
+Console wording changes; anything marked **(verify in console)** must be checked in the Vultr UI. We do not state prices or plan names here: pick the smallest option that fits and check cost in the console. GradeCase uses synthetic data only; do not load real student records.
 
 ## 1. Create the firewall group
 1. Console -> Firewall -> add a firewall group **(verify in console)**.
-2. Add inbound rules for TCP **22** (SSH; ideally limited to your IP), **80** and **443**. Everything else stays closed.
+2. Inbound rules for TCP **22** (ideally limited to your IP), **80** and **443**. Everything else stays closed.
 
 ## 2. Create the instance
-1. Console -> Deploy a new instance (cloud compute) **(verify in console)**.
-2. Image: **Ubuntu 24.04**. Location and size: your choice, **(verify in console)** CPU/RAM/cost. Docker + the sandbox are fine on a small size for a demo.
+1. Console -> deploy a new cloud compute instance **(verify in console)**.
+2. Image: **Ubuntu 24.04**. Location and size: your choice; **(verify in console)** CPU/RAM/cost. A small size is enough for a demo.
 3. Add your SSH key.
-4. Paste the contents of [`cloud-init.yaml`](cloud-init.yaml) into the cloud-init / user-data field **(verify field name in console)**.
-5. Attach the firewall group from step 1, then deploy.
+4. Paste [`cloud-init.yaml`](cloud-init.yaml) into the cloud-init / user-data field **(verify field name in console)**.
+   - It clones branch `BRANCH` (currently `claude/ecstatic-newton-ck2lvo`). **After the PR is merged, change `BRANCH` to `main`.**
+5. Attach the firewall group and deploy.
 
-cloud-init installs Docker, clones the repo to `/opt/agent-rush`, copies `.env.example` to `.env` and starts the stack. It takes a few minutes; watch with `tail -f /var/log/cloud-init-output.log`.
+cloud-init installs Docker, clones the repo to `/opt/gradecase`, copies `.env.example` to `.env`, and runs `docker compose up -d --build`. Watch progress with `tail -f /var/log/cloud-init-output.log`.
 
-## 3. Configure
+## 3. Check it
+```bash
+curl http://<SERVER_IP>/health
+```
+Expected: `{"status":"ok"}`. Then open `http://<SERVER_IP>/`. The app starts in mock-AI mode with seeded synthetic cases; no key is required.
+
+## 4. Optional: turn on Vultr Serverless Inference
 ```bash
 ssh root@<SERVER_IP>
-cd /opt/agent-rush
-nano .env
+cd /opt/gradecase && nano .env
 ```
-Set at least:
-- `VULTR_INFERENCE_API_KEY` (from the Vultr console **(verify where Serverless Inference keys are created)**)
-- `LLM_MODEL` - run `curl -s localhost/api/models` first to see real model ids
-- `PRODUCT_NAME`, `PRODUCT_TAGLINE`
-- `DOMAIN` (optional, see below)
-- `SANDBOX_ENABLED=true` only for Track 1 and only after uncommenting the docker socket lines in `docker-compose.yml` (read the security note there)
-
-## 4. (Re)deploy
+Set `VULTR_INFERENCE_API_KEY` (create it in the Vultr console **(verify where)**), restart, and list real model ids:
 ```bash
-cd /opt/agent-rush
-git pull
-docker compose up -d --build
+docker compose up -d && curl -s http://localhost/api/models
 ```
-Check: `curl http://<SERVER_IP>/health` should return `{"status":"ok"}`, then open `http://<SERVER_IP>/`.
-Logs: `docker compose logs -f app`.
+Put one id into `LLM_MODEL`, then `docker compose up -d` again. If the call ever fails or times out, the UI shows "AI unavailable, rules-only view" and keeps working.
 
-## 5. HTTPS (optional)
-1. Create a DNS **A record** for your domain pointing to the server IP.
-2. Set `DOMAIN=your.domain` in `.env`, run `docker compose up -d`.
-3. Caddy obtains a certificate automatically (ports 80 and 443 must be open).
+## 5. Redeploy after code changes
+```bash
+cd /opt/gradecase && git pull && docker compose up -d --build
+```
+Data lives in the `gradecase_data` Docker volume and survives restarts and rebuilds. To wipe it: use the "Reset demo data" link in the UI, or `docker compose down -v` (also deletes the Caddy certificate volume).
 
-Without `DOMAIN` the app is served over plain HTTP on the server IP, which is fine for a hackathon demo.
+## 6. HTTPS (optional)
+Create a DNS **A record** to the server IP, set `DOMAIN=your.domain` in `.env`, run `docker compose up -d`. Ports 80 and 443 must be open. Without `DOMAIN`, the app is served over plain HTTP on the server IP.
 
 ## Troubleshooting
-- Page does not load: firewall group missing port 80, or `docker compose ps` shows a service down.
-- `/api/models` returns 502: wrong key or base URL; the error text is included in the response.
-- Sandbox shows `mock` in the page header: `SANDBOX_ENABLED` is not true, or the app cannot reach Docker (socket not mounted).
-- Timeline freezes behind a proxy: SSE needs unbuffered proxying; the provided Caddyfile already sets `flush_interval -1`.
+- Page does not load: firewall group missing port 80, or `docker compose ps` shows a service down; `docker compose logs -f app`.
+- `/api/models` returns 502: wrong key or base URL; the error text is in the response body.
+- Data missing after redeploy: make sure you did not run `docker compose down -v`.
