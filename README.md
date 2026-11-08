@@ -1,16 +1,45 @@
 # GradeCase
 
-**A case desk for grading exceptions.** Built for the Vultr: Agent Rush hackathon (lablab.ai x Vultr), Track 2 "Powering the Future of Work".
+**A case desk for academic grading exceptions.** *"정보는 있는데, 사건은 없다"* - the information exists, but the case doesn't.
 
-> **Live demo (HTTP only): http://45.77.185.101** - runs in mock-AI mode on a Vultr VM. See [Deployment status](#deployment-status).
+GradeCase connects the scattered records behind a grading complaint (attempt log, deadline, late policy, rubric, gradebook, and the same message arriving by Inbox, email and submission comment) into **one case with evidence, rules and an approval trail**. AI explains and drafts; **humans decide**. Times, scores and deductions are computed by code, never by the model, and the system never changes a grade or sends a message.
+
+Built for the Vultr: Agent Rush hackathon (lablab.ai x Vultr), Track 2 "Powering the Future of Work".
+
+> **Live demo (HTTP only): http://45.77.185.101** - see [Deployment status](#deployment-status) for what is and is not running there.
 >
 > **Synthetic demo data only.** No real student records. No grades are changed and no messages are sent. Canvas is not connected.
+
+## Tech stack
+
+| Layer | Choice |
+|---|---|
+| Hosting | Vultr VM (Ubuntu 24.04), `docker compose`, Caddy |
+| AI (optional) | Vultr Serverless Inference, OpenAI-compatible API; deterministic mock mode without a key |
+| Backend | FastAPI (Python 3.12+), rule engine and guardrails in plain Python |
+| Storage | SQLite on a Docker volume |
+| Frontend | Plain JavaScript and CSS, no build step, no chart or animation library |
+| Tests | pytest (provider stubs, no live calls), ruff, a Playwright browser smoke |
+
+## Screenshots
+
+Placeholders until real captures are added to `docs/screenshots/`.
+
+| Dashboard | Evidence + AI card | Decision |
+|---|---|---|
+| ![Dashboard](docs/screenshots/dashboard.png) | ![Evidence](docs/screenshots/evidence.png) | ![Decision](docs/screenshots/decision.png) |
+
+## More documentation
+
+- [docs/PRODUCT_PLAN.md](docs/PRODUCT_PLAN.md) - product context (stub, see the note inside)
+- [docs/REBUILD_SPEC.md](docs/REBUILD_SPEC.md) - the UI rebuild specification
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), [deploy/DEPLOY.md](deploy/DEPLOY.md)
 
 ## Problem
 
 When a student writes "I submitted on time but it says late" or "I got 0", a TA or professor has to rebuild the story by hand: the same complaint arrives in the LMS inbox, by email and as a submission comment; the facts live in four places (attempt log, deadline, late policy, rubric and gradebook); and a late-policy exception can only be granted by the professor. Replies get duplicated, evidence is lost, and nobody can later say who decided what.
 
-## Solution
+## Features
 
 GradeCase turns scattered messages into **one case with one evidence bundle**, and keeps a human in every decision.
 
@@ -84,6 +113,8 @@ Everything below is enforced on the server and covered by tests that use an HTTP
 **Pending live verification (operator):** a first real analysis run, a real screenshot extraction, a real PDF/DOCX extraction, and confirming that `/api/ai/status` then shows `last_success_at`.
 
 ## Interface and dashboard
+
+Deliberate differences from the rebuild spec: there is no "~12 min saved per case" tile (nothing measures it, so the dashboard shows average model latency instead); the sidebar says "Connected" only after a real successful model call; the one-line pitch is not used verbatim because "catches errors humans miss" is not something we have measured.
 
 The app opens on a **Dashboard** (`#/dashboard`): total cases, cases needing action, cases closed today and average model latency, a status bar chart, an AI performance card and a recent-activity feed. Every number is computed in the browser from existing endpoints plus two read-only ones: `GET /api/activity?limit=` (real analysis runs, decisions and new cases, newest first) and the `runs` block of `GET /api/ai/status`. Nothing is estimated; there is no "time saved" figure. In mock mode the AI card says so and never shows "Connected"; that label appears only after a real successful model call.
 
