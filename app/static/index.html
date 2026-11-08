@@ -3,30 +3,49 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
   <title>GradeCase</title>
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-  <div id="banner" role="status">
-    Synthetic demo data. No real student records. No grades are changed and no messages are sent.
+  <a class="skip" href="#view">Skip to content</a>
+  <div class="app">
+    <aside class="rail" aria-label="Workspace">
+      <div class="brand">
+        <span class="monogram" aria-hidden="true">GC</span>
+        <div>
+          <div class="wordmark" id="name">GradeCase</div>
+          <div class="brand-sub">Academic case desk</div>
+        </div>
+      </div>
+      <nav id="nav" aria-label="Main"></nav>
+      <div class="rail-foot">
+        <div class="role" role="group" aria-labelledby="role-label">
+          <div class="label" id="role-label">Demo role switch</div>
+          <div class="seg">
+            <button id="role-ta" type="button" aria-pressed="true">TA</button>
+            <button id="role-professor" type="button" aria-pressed="false">Professor</button>
+          </div>
+          <p class="hint">Not access control. Anyone can switch.</p>
+        </div>
+        <div class="ai" id="ai"></div>
+      </div>
+    </aside>
+
+    <div class="main">
+      <header class="topbar">
+        <nav id="crumbs" aria-label="Breadcrumb"></nav>
+        <span class="ws-badge">Synthetic workspace: DEMO 3060</span>
+      </header>
+      <div class="strip" id="banner" role="note">Synthetic demo data. No real student records. No grades are changed and no messages are sent.</div>
+      <main id="view" tabindex="-1"><p class="muted pad">Loading...</p></main>
+      <footer class="foot">
+        <span id="mode" class="muted"></span>
+        <button id="reset" type="button" class="linkbtn">Reset demo data</button>
+      </footer>
+    </div>
   </div>
-  <header class="top">
-    <div class="brand">
-      <strong id="name">GradeCase</strong>
-      <span id="tagline" class="muted"></span>
-    </div>
-    <nav id="nav" aria-label="Screens"></nav>
-    <div class="role" role="group" aria-label="Demo role switch">
-      <span class="muted small">Demo role switch - not real access control</span>
-      <button id="role-ta" type="button">TA</button>
-      <button id="role-professor" type="button">Professor</button>
-    </div>
-  </header>
-  <main id="view"></main>
-  <footer class="small muted">
-    <span id="mode"></span>
-    <button id="reset" type="button" class="link">Reset demo data</button>
-  </footer>
+  <div id="live" class="sr-only" aria-live="polite"></div>
   <script src="/static/app.js"></script>
 </body>
 </html>

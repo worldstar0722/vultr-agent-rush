@@ -1,23 +1,40 @@
-// GradeCase UI: Case Queue, Evidence View, Decision Desk. No build step.
-// All text is inserted with textContent / createTextNode, never innerHTML.
+"use strict";
+// GradeCase UI: Case Queue, Evidence, Decision. Plain JS, no build step.
+// Every piece of data is inserted as a text node, so source text cannot inject markup.
 
 const h = (tag, attrs = {}, ...kids) => {
   const el = document.createElement(tag);
-  for (const [k, v] of Object.entries(attrs)) {
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (v == null || v === false) continue;
     if (k === "class") el.className = v;
     else if (k.startsWith("on")) el.addEventListener(k.slice(2), v);
     else if (v === true) el.setAttribute(k, "");
-    else if (v !== false && v != null) el.setAttribute(k, v);
+    else el.setAttribute(k, v);
   }
-  for (const kid of kids.flat()) {
+  for (const kid of kids.flat(Infinity)) {
     if (kid == null || kid === false) continue;
     el.append(kid.nodeType ? kid : document.createTextNode(String(kid)));
   }
   return el;
 };
+const $ = (id) => document.getElementById(id);
 
-const state = { role: "ta", cfg: null, detail: null, msg: null, filters: {} };
-try { state.role = localStorage.getItem("gc_role") || "ta"; } catch (e) { /* storage blocked */ }
+// ------------------------------------------------------------------ state
+
+const S = {
+  role: "ta",
+  cfg: null,
+  detail: null,
+  notice: null, // {kind: success|error|info, title, text}
+  filters: { q: "", status: "", owner: "", channel: "", quick: "all" },
+  ui: { caseId: null, note: "", counted: "", body: null },
+  lastCase: null,
+  hash: "#/queue",
+  ignoreHash: false,
+};
+try { S.role = localStorage.getItem("gc_role") === "professor" ? "professor" : "ta"; } catch (e) { /* storage blocked */ }
+
+// ------------------------------------------------------------------ helpers
 
 async function api(path, opts = {}) {
   const resp = await fetch(path, {
@@ -28,64 +45,173 @@ async function api(path, opts = {}) {
   const data = await resp.json().catch(() => ({}));
   if (!resp.ok) {
     const d = data.detail;
-    throw new Error(typeof d === "string" ? d : JSON.stringify(d) || `HTTP ${resp.status}`);
+    throw new Error(typeof d === "string" ? d : d ? JSON.stringify(d) : `Request failed (HTTP ${resp.status})`);
   }
   return data;
 }
 
-const num = (n) => (n == null ? "-" : Number.isInteger(n) ? String(n) : n.toFixed(2));
-const when = (ts) => {
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+function fmt(ts, tz = false) {
   if (!ts) return "-";
-  const tz = ts.endsWith("+00:00") ? " UTC" : ts.endsWith("-07:00") ? " (UTC-7)" : "";
-  return ts.slice(0, 16).replace("T", " ") + tz;
-};
+  let out = `${MONTHS[+ts.slice(5, 7) - 1]} ${+ts.slice(8, 10)}, ${ts.slice(11, 16)}`;
+  if (tz) {
+    const off = ts.slice(19);
+    out += off === "+00:00" || off === "Z" ? " UTC" : ` UTC${off.replace(":00", "").replace("-", "−")}`;
+  }
+  return out;
+}
+const num = (n) => (n == null ? "-" : Number.isInteger(n) ? String(n) : n.toFixed(2));
+const plural = (n, w) => `${n} ${w}${n === 1 ? "" : "s"}`;
 const slug = (s) => s.toLowerCase().replace(/[^a-z]+/g, "-");
+const CHANNEL = { canvas_inbox: "Canvas inbox", email: "Email", submission_comment: "Submission comment" };
+const channelName = (c) => CHANNEL[c] || c;
+const TITLE = {
+  late_flag: "On-time submission flagged late",
+  score_gap: "Score does not match rubric",
+  missing_submission: "Emailed file not found in Canvas",
+  other: "Grading question",
+};
+const caseTitle = (c) => TITLE[c.issue] || TITLE.other;
+const mins = (t) => {
+  const m = t.minutes_vs_deadline;
+  return m == null ? "" : m <= 0 ? `${plural(-m, "minute")} before the deadline` : `${plural(m, "minute")} after the deadline`;
+};
+
+function say(text) { $("live").textContent = text; }
+
+function nextStep(c) {
+  if (c.merged_into) return "Merged";
+  if (c.status === "Closed") return "Closed";
+  if (c.status === "Awaiting professor") return "Professor decision";
+  if (c.status === "Awaiting student info") return "Waiting for student";
+  return ({ escalate: "Request professor review", request_info: "Request student information",
+    hold: "Place on hold", approve: "Review and close" })[c.suggested_action] || "Review";
+}
+
+// ------------------------------------------------------------------ shared components
+
 const pill = (status) => h("span", { class: `pill s-${slug(status)}` }, status);
-const ids = (list) => (list || []).filter(Boolean).map((i) => h("span", { class: "id" }, `[${i}] `));
 
-// ------------------------------------------------------------------ chrome
+function idChip(ref, d) {
+  const known = d && d.evidence.some((e) => e.ref_id === ref);
+  if (!known) return h("span", { class: "idchip missing", title: "No record with this id exists" }, ref);
+  return h("a", { href: "#", class: "idchip", title: "Show this record in the audit timeline",
+    onclick: (e) => { e.preventDefault(); openRecord(ref); } }, ref);
+}
+const chips = (refs, d) => h("span", { class: "chips" }, (refs || []).filter(Boolean).map((r) => [idChip(r, d), " "]));
 
-function setRole(role) {
-  state.role = role;
-  try { localStorage.setItem("gc_role", role); } catch (e) { /* ignore */ }
-  document.getElementById("role-ta").classList.toggle("on", role === "ta");
-  document.getElementById("role-professor").classList.toggle("on", role === "professor");
-  route();
+function openRecord(ref) {
+  const audit = document.getElementById("audit");
+  if (audit) audit.open = true;
+  const el = document.getElementById(`ev-${ref}`);
+  if (!el) return;
+  el.scrollIntoView({ block: "center", behavior: "smooth" });
+  el.classList.add("flash");
+  setTimeout(() => el.classList.remove("flash"), 2200);
 }
 
-function renderNav(caseId, screen) {
-  const nav = document.getElementById("nav");
-  const link = (label, href, active, disabled) =>
-    h("a", { href, class: (active ? "active " : "") + (disabled ? "disabled" : "") }, label);
-  nav.replaceChildren(
-    link("Case Queue", "#/queue", screen === "queue"),
-    link("Evidence View", caseId ? `#/case/${caseId}/evidence` : "#", screen === "evidence", !caseId),
-    link("Decision Desk", caseId ? `#/case/${caseId}/decision` : "#", screen === "decision", !caseId),
-  );
+function noticeEl() {
+  const n = S.notice;
+  if (!n) return null;
+  return h("div", { class: `notice ${n.kind}`, role: n.kind === "error" ? "alert" : "status" },
+    n.title && h("strong", {}, n.title + " "), n.text,
+    h("button", { type: "button", class: "linkbtn dismiss", onclick: () => { S.notice = null; render(); } }, "Dismiss"));
 }
 
-async function route() {
-  const view = document.getElementById("view");
-  const parts = location.hash.replace(/^#\/?/, "").split("/");
+function actionLabel(action, role) {
+  return ({ approve: role === "professor" ? "Approve decision" : "Approve and close", hold: "Place on hold",
+    reject: "Reject request", escalate: "Request professor review", request_info: "Request student information" })[action];
+}
+
+function routeLabel(d) {
+  const a = d.analysis;
+  if (d.case.status === "Closed") return "Closed";
+  if (a.professor_approved) return "Professor decision recorded";
+  return ({ escalate: "Professor decision required", request_info: "Student information needed",
+    hold: "Hold: records need confirmation", approve: "TA can review and close" })[a.suggested_action];
+}
+
+function storedBody(dr) { return dr ? (dr.body_edited ?? dr.body_ai) : ""; }
+function isDirty() {
+  const dr = S.detail && S.detail.draft;
+  return !!(S.ui.caseId && dr && S.ui.body != null && S.ui.body !== storedBody(dr));
+}
+function confirmDiscard(what) {
+  if (!isDirty()) return true;
+  const ok = confirm(`You have unsaved edits to the reply draft. Discard them and ${what}?`);
+  if (ok) S.ui.body = null;
+  return ok;
+}
+
+// ------------------------------------------------------------------ shell (rail, crumbs)
+
+function renderShell(route) {
+  const link = (label, href, current) =>
+    h("a", { href, class: "navlink", "aria-current": current ? "page" : null }, label);
+  const nav = [link("Case Queue", "#/queue", route.screen === "queue")];
+  if (route.caseId) {
+    nav.push(h("div", { class: "navgroup" }, h("div", { class: "label" }, "Selected case"),
+      h("div", { class: "mono navcase" }, route.caseId),
+      link("Evidence", `#/case/${route.caseId}/evidence`, route.screen === "evidence"),
+      link("Decision", `#/case/${route.caseId}/decision`, route.screen === "decision")));
+  }
+  $("nav").replaceChildren(...nav);
+
+  const crumbs = [h("a", { href: "#/queue" }, "Cases")];
+  if (route.caseId) {
+    crumbs.push(h("span", { class: "sep" }, "/"), h("a", { href: `#/case/${route.caseId}/evidence` }, route.caseId));
+    crumbs.push(h("span", { class: "sep" }, "/"), h("span", { "aria-current": "page" }, route.screen === "decision" ? "Decision" : "Evidence"));
+  }
+  $("crumbs").replaceChildren(...crumbs);
+
+  for (const r of ["ta", "professor"]) $(`role-${r}`).setAttribute("aria-pressed", String(S.role === r));
+  const live = S.cfg && S.cfg.llm_mode !== "mock";
+  $("ai").replaceChildren(
+    h("div", { class: "ai-title" }, live ? "Live AI connected" : "Rules + demo drafts"),
+    h("div", { class: "ai-sub" }, live ? "Vultr Serverless Inference" : "Live AI not connected"));
+  document.title = `${route.screen === "queue" ? "Cases" : route.caseId} - GradeCase`;
+}
+
+// ------------------------------------------------------------------ routing
+
+function parseRoute() {
+  const p = location.hash.replace(/^#\/?/, "").split("/");
+  if (p[0] === "case" && p[1]) return { screen: p[2] === "decision" ? "decision" : "evidence", caseId: p[1] };
+  return { screen: "queue", caseId: null };
+}
+
+let renderToken = 0;
+async function render() {
+  const route = parseRoute();
+  const token = ++renderToken;
+  const view = $("view");
+  renderShell(route);
   try {
-    if (parts[0] === "case" && parts[1]) {
-      const screen = parts[2] === "decision" ? "decision" : "evidence";
-      renderNav(parts[1], screen);
-      if (!state.detail || state.detail.case.id !== parts[1]) {
-        state.msg = null;
-        state.detail = await api(`/api/cases/${parts[1]}`);
-      }
-      if (screen === "decision" && !state.detail.draft) {
-        state.detail = await api(`/api/cases/${parts[1]}/draft`, { method: "POST" });
-      }
-      view.replaceChildren(screen === "decision" ? decisionView() : evidenceView());
-    } else {
-      renderNav(null, "queue");
-      state.detail = null;
-      view.replaceChildren(await queueView());
+    if (route.screen === "queue") {
+      S.detail = null;
+      S.ui = { caseId: null, note: "", counted: "", body: null };
+      const node = await queueView();
+      if (token === renderToken) view.replaceChildren(node);
+      return;
     }
+    if (S.ui.caseId !== route.caseId) S.ui = { caseId: route.caseId, note: "", counted: "", body: null };
+    S.lastCase = route.caseId;
+    if (!S.detail || S.detail.case.id !== route.caseId || S.refetch) {
+      view.replaceChildren(h("p", { class: "muted pad" }, "Loading case..."));
+      S.detail = await api(`/api/cases/${route.caseId}`);
+      S.refetch = false;
+    }
+    if (route.screen === "decision" && !S.detail.draft) {
+      view.replaceChildren(h("p", { class: "muted pad" }, "Preparing the reply draft from computed records..."));
+      S.detail = await api(`/api/cases/${route.caseId}/draft`, { method: "POST" });
+    }
+    if (token !== renderToken) return;
+    view.replaceChildren(route.screen === "decision" ? decisionView() : evidenceView());
   } catch (e) {
-    view.replaceChildren(h("div", { class: "msg error" }, `Error: ${e.message}`));
+    if (token !== renderToken) return;
+    view.replaceChildren(h("div", { class: "pad" }, h("div", { class: "notice error", role: "alert" }, `Could not load this screen: ${e.message}`),
+      h("button", { type: "button", class: "btn", onclick: () => { S.refetch = true; render(); } }, "Try again"),
+      " ", h("a", { class: "btn", href: "#/queue" }, "Back to cases")));
   }
 }
 
@@ -93,336 +219,566 @@ async function route() {
 
 async function queueView() {
   const cases = await api("/api/cases");
-  const f = state.filters;
+  const F = S.filters;
+  const open = (c) => c.status !== "Closed";
+  const quick = {
+    all: () => true,
+    open,
+    professor: (c) => open(c) && (c.requires_professor || c.status === "Awaiting professor"),
+    evidence: (c) => open(c) && c.suggested_action === "request_info",
+    closed: (c) => !open(c),
+  };
+  const QUICK = [["all", "All"], ["open", "Open"], ["professor", "Needs professor"], ["evidence", "Needs evidence"], ["closed", "Closed"]];
   const uniq = (xs) => [...new Set(xs)].sort();
-  const select = (key, label, options) =>
-    h("label", {}, label,
-      h("select", { onchange: (e) => { f[key] = e.target.value; route(); } },
-        h("option", { value: "" }, "All"),
-        options.map((o) => h("option", { value: o, selected: f[key] === o }, o))));
+  const owners = uniq(cases.map((c) => c.owner || "Unassigned"));
+  const channels = uniq(cases.flatMap((c) => c.channels));
 
-  const shown = cases.filter((c) =>
-    (!f.status || c.status === f.status) &&
-    (!f.owner || (c.owner || "Unassigned") === f.owner) &&
-    (!f.channel || c.channels.includes(f.channel)) &&
-    (!f.dup || c.duplicates.length));
+  const tabs = h("div", { class: "tabs", role: "group", "aria-label": "Quick filter" });
+  const rows = h("tbody");
+  const count = h("p", { class: "muted small", "aria-live": "polite" });
+  const empty = h("div", { class: "empty", hidden: true });
 
-  const dups = new Map();
-  cases.forEach((c) => c.duplicates.forEach((d) => dups.set(d.id, { ...d, a: c.id })));
+  const match = (c) => {
+    const q = F.q.trim().toLowerCase();
+    const hay = [c.id, c.student_id, c.assignment, c.assignment_name, c.issue, caseTitle(c), c.owner || "unassigned",
+      c.course, c.channels.map(channelName).join(" ")].join(" ").toLowerCase();
+    return quick[F.quick](c) && (!q || q.split(/\s+/).every((w) => hay.includes(w))) &&
+      (!F.status || c.status === F.status) && (!F.owner || (c.owner || "Unassigned") === F.owner) &&
+      (!F.channel || c.channels.includes(F.channel));
+  };
 
-  const strip = [...dups.values()].map((d) =>
-    h("div", { class: "dup" },
-      h("span", {}, h("strong", {}, "Possible duplicate: "), `${d.a} and ${d.other}. ${d.reason}. `,
-        "Not merged until a person confirms."),
-      h("button", { class: "primary", onclick: () => resolveDup(d.id, true) }, "Confirm merge"),
-      h("button", { onclick: () => resolveDup(d.id, false) }, "Not a duplicate")));
+  function update() {
+    tabs.replaceChildren(...QUICK.map(([k, label]) =>
+      h("button", { type: "button", class: "tab", "aria-pressed": String(F.quick === k),
+        onclick: () => { F.quick = k; update(); } },
+      label, " ", h("span", { class: "tabcount" }, cases.filter(quick[k]).length))));
+    const shown = cases.filter(match);
+    rows.replaceChildren(...shown.map(queueRow));
+    count.textContent = `Showing ${shown.length} of ${cases.length} cases`;
+    const filtered = F.q || F.status || F.owner || F.channel || F.quick !== "all";
+    empty.hidden = shown.length > 0;
+    table.hidden = shown.length === 0;
+    empty.replaceChildren(h("strong", {}, "No cases match these filters."), h("p", { class: "muted" }, "Try a different search, or clear the filters to see every case."),
+      filtered && h("button", { type: "button", class: "btn", onclick: clear }, "Clear filters"));
+    clearBtn.hidden = !filtered;
+  }
+  function clear() {
+    Object.assign(F, { q: "", status: "", owner: "", channel: "", quick: "all" });
+    search.value = ""; selStatus.value = ""; selOwner.value = ""; selChannel.value = "";
+    update();
+  }
 
-  return h("div", {},
-    h("h2", {}, "Case Queue"),
-    state.msg && h("div", { class: "msg" }, state.msg),
-    strip,
-    h("div", { class: "filters" },
-      select("status", "Status ", ["New", "TA review", "Awaiting professor", "Awaiting student info", "Closed"]),
-      select("owner", "Owner ", uniq(cases.map((c) => c.owner || "Unassigned"))),
-      select("channel", "Channel ", uniq(cases.flatMap((c) => c.channels))),
-      h("label", {}, h("input", { type: "checkbox", checked: !!f.dup,
-        onchange: (e) => { f.dup = e.target.checked; route(); } }), "Duplicate candidates only")),
-    h("table", {},
-      h("thead", {}, h("tr", {}, ["Case", "Student", "Assignment", "Issue", "Status", "Owner",
-        "Last reply", "Waiting reason", "Flags"].map((t) => h("th", {}, t)))),
-      h("tbody", {}, shown.map(queueRow), !shown.length && h("tr", {}, h("td", { colspan: 9 }, "No cases match.")))));
+  const field = (label, control) => h("label", { class: "field" }, h("span", { class: "label" }, label), control);
+  const search = h("input", { type: "search", class: "input", placeholder: "Case, student, assignment or issue", value: F.q,
+    oninput: (e) => { F.q = e.target.value; update(); } });
+  const sel = (key, options, label) => {
+    const el = h("select", { class: "input", onchange: (e) => { F[key] = e.target.value; update(); } },
+      h("option", { value: "" }, "All"), options.map(([v, t]) => h("option", { value: v, selected: F[key] === v }, t)));
+    return el;
+  };
+  const selStatus = sel("status", ["New", "TA review", "Awaiting professor", "Awaiting student info", "Closed"].map((s) => [s, s]));
+  const selOwner = sel("owner", owners.map((o) => [o, o]));
+  const selChannel = sel("channel", channels.map((c) => [c, channelName(c)]));
+  const clearBtn = h("button", { type: "button", class: "btn quiet", onclick: clear }, "Clear filters");
+
+  const table = h("table", { class: "qtable" },
+    h("thead", {}, h("tr", {}, ["Case", "Assignment", "Status", "Owner", "Next step"].map((t) => h("th", { scope: "col" }, t)))), rows);
+
+  const view = h("div", { class: "page" },
+    noticeEl(),
+    h("h1", {}, "Cases"),
+    h("p", { class: "lede" }, "Open a case to see the evidence, then record a decision. Nothing here changes a grade or sends a message."),
+    duplicatePanel(cases),
+    h("div", { class: "toolbar" }, tabs),
+    h("div", { class: "filters" }, field("Search", search), field("Status", selStatus), field("Owner", selOwner), field("Channel", selChannel), clearBtn),
+    count, table, empty);
+  update();
+  return view;
 }
 
 function queueRow(c) {
-  const reply = c.last_reply ? `${c.last_reply.channel} by ${c.last_reply.by}, ${when(c.last_reply.ts)}` : "No reply yet";
-  return h("tr", { class: "click", onclick: () => { location.hash = `#/case/${c.id}/evidence`; } },
-    h("td", { class: "id" }, c.id),
-    h("td", { class: "id" }, c.student_id),
-    h("td", {}, `${c.assignment} (${c.course})`),
-    h("td", {}, c.issue.replace("_", " ")),
-    h("td", {}, pill(c.status)),
-    h("td", {}, c.owner || "Unassigned"),
-    h("td", {}, reply),
-    h("td", {}, c.waiting_reason),
-    h("td", {},
-      c.duplicates.length ? h("span", { class: "badge solid" }, "Duplicate candidate") : null,
-      c.insufficient_evidence ? h("span", { class: "badge" }, "Insufficient evidence") : null,
-      c.on_hold ? h("span", { class: "badge" }, "On hold") : null));
+  const go = () => { location.hash = `#/case/${c.id}/evidence`; };
+  const reply = c.last_reply ? `Last reply: ${channelName(c.last_reply.channel)}, ${c.last_reply.by}, ${fmt(c.last_reply.ts)}` : "No reply yet";
+  return h("tr", { class: "qrow", "aria-current": S.lastCase === c.id ? "true" : null,
+    onclick: (e) => { if (!e.target.closest("a,button")) go(); } },
+    h("td", { "data-label": "Case" },
+      h("a", { class: "caselink", href: `#/case/${c.id}/evidence` }, caseTitle(c)),
+      h("div", { class: "meta" }, h("span", { class: "mono" }, c.id), " · student ", h("span", { class: "mono" }, c.student_id)),
+      h("div", { class: "meta" }, reply),
+      (c.duplicates.length > 0 || c.on_hold) && h("div", { class: "tags" },
+        c.duplicates.length > 0 && h("span", { class: "tag" }, "Possible duplicate"),
+        c.on_hold && h("span", { class: "tag" }, "On hold"))),
+    h("td", { "data-label": "Assignment" }, h("div", {}, c.assignment_name), h("div", { class: "meta" }, `${c.assignment} · ${c.course}`)),
+    h("td", { "data-label": "Status" }, pill(c.status)),
+    h("td", { "data-label": "Owner" }, c.owner || h("span", { class: "muted" }, "Unassigned")),
+    h("td", { "data-label": "Next step" }, h("div", { class: "next" }, nextStep(c)), h("div", { class: "meta clamp" }, c.waiting_reason)));
 }
 
-async function resolveDup(id, confirm) {
+function duplicatePanel(cases) {
+  const byId = new Map(cases.map((c) => [c.id, c]));
+  const pairs = new Map();
+  cases.forEach((c) => c.duplicates.forEach((x) => { if (!pairs.has(x.id)) pairs.set(x.id, { id: x.id, reason: x.reason, a: c.id, b: x.other }); }));
+  if (!pairs.size) return null;
+  const side = (id) => {
+    const c = byId.get(id);
+    return h("div", { class: "dupside" },
+      h("div", {}, h("a", { href: `#/case/${id}/evidence`, class: "caselink" }, id), " ", pill(c.status)),
+      h("div", { class: "meta" }, c.channels.map(channelName).join(", ") || "No channel", " · ", c.owner || "Unassigned"),
+      h("div", { class: "meta" }, `${c.assignment_name} · student ${c.student_id}`));
+  };
+  return h("details", { class: "dup" },
+    h("summary", {}, plural(pairs.size, "duplicate pair"), " to review", h("span", { class: "muted" }, " (nothing is merged until you confirm)")),
+    [...pairs.values()].map((p) => h("div", { class: "duppair" },
+      h("div", { class: "dupgrid" }, side(p.a), side(p.b)),
+      h("p", { class: "meta" }, p.reason + "."),
+      h("div", { class: "btnrow" },
+        h("button", { type: "button", class: "btn primary", onclick: (e) => resolveDup(p, true, e.currentTarget) }, `Merge ${p.b} into ${p.a}`),
+        h("button", { type: "button", class: "btn", onclick: (e) => resolveDup(p, false, e.currentTarget) }, "Not a duplicate")))));
+}
+
+async function resolveDup(p, confirmMerge, btn) {
+  btn.disabled = true;
   try {
-    await api(`/api/duplicates/${id}/${confirm ? "confirm" : "dismiss"}`, { method: "POST", body: { role: state.role } });
-    state.msg = confirm ? "Cases merged and logged." : "Marked as not a duplicate.";
-  } catch (e) { state.msg = `Error: ${e.message}`; }
-  route();
+    await api(`/api/duplicates/${p.id}/${confirmMerge ? "confirm" : "dismiss"}`, { method: "POST", body: { role: S.role } });
+    S.notice = { kind: "success", title: confirmMerge ? "Merged." : "Kept separate.",
+      text: confirmMerge ? `${p.b} was merged into ${p.a} and the merge was logged.` : `${p.a} and ${p.b} will not be proposed again.` };
+  } catch (e) { S.notice = { kind: "error", title: "Could not update the duplicate.", text: e.message }; }
+  render();
 }
 
-// ------------------------------------------------------------------ shared header
+// ------------------------------------------------------------------ case header
 
-function caseHeader(d) {
+function caseHeader(d, screen) {
   const c = d.case;
-  return h("section", { class: "panel" },
-    h("h2", {}, `${c.id}: ${c.assignment_name} (${c.course})`),
-    h("div", {}, pill(c.status), " ",
-      h("span", { class: "muted" }, ` student `), h("span", { class: "id" }, c.student_id),
-      h("span", { class: "muted" }, `  owner `), c.owner || "Unassigned",
-      h("span", { class: "muted" }, `  issue `), c.issue.replace("_", " ")),
-    h("div", { class: "muted small" }, "Waiting: " + c.waiting_reason),
-    c.duplicates.map((x) => h("div", { class: "dup" },
-      `Possible duplicate of ${x.other}: ${x.reason}.`,
-      h("a", { href: "#/queue" }, "Review in queue"))));
+  return h("header", { class: "casehead" },
+    h("a", { class: "back", href: "#/queue" }, "← Back to cases"),
+    h("div", { class: "headrow" },
+      h("div", {},
+        h("h1", {}, caseTitle(c)),
+        h("div", { class: "metarow" }, pill(c.status),
+          h("span", {}, c.assignment_name, " (", c.assignment, ", ", c.course, ")"),
+          h("span", {}, "Owner: ", c.owner || "Unassigned"),
+          h("span", {}, "Student ", h("span", { class: "mono" }, c.student_id)),
+          h("span", { class: "mono" }, c.id))),
+      h("nav", { class: "steps2", "aria-label": "Case steps" },
+        h("a", { href: `#/case/${c.id}/evidence`, "aria-current": screen === "evidence" ? "step" : null }, h("span", { class: "stepno" }, "1"), "Evidence"),
+        h("a", { href: `#/case/${c.id}/decision`, "aria-current": screen === "decision" ? "step" : null }, h("span", { class: "stepno" }, "2"), "Decision"))),
+    c.merged_into && h("div", { class: "notice info" }, `This case was merged into ${c.merged_into}.`));
 }
 
-// ------------------------------------------------------------------ evidence view
+// ------------------------------------------------------------------ evidence screen
+
+function factSummary(d) {
+  const a = d.analysis, s = a.score_state;
+  const sub = a.attempts.filter((t) => t.state === "submitted");
+  const basis = a.gates.find((g) => g.code === "attempt_basis");
+  const counted = a.attempts.find((t) => t.counted);
+  const first = sub.find((t) => t.minutes_vs_deadline != null && t.minutes_vs_deadline <= 0);
+  if (basis && first && counted) {
+    return [idChip(first.ref_id, d), ` was submitted ${mins(first)}, but the newest attempt, `, idChip(counted.ref_id, d),
+      `, was ${plural(counted.minutes_vs_deadline, "minute")} late and is the one graded, with a ${num(s.late_deduction_applied)}-point late deduction.`];
+  }
+  const gap = s.differences.find((x) => x.code === "entered_vs_expected");
+  if (gap) {
+    const dir = gap.amount < 0 ? "below" : "above";
+    return [`The entered score (${num(s.entered)}) is ${num(Math.abs(gap.amount))} points ${dir} the rubric total (${num(s.rubric_total)}) and no late deduction is recorded to explain it. `, chips(gap.evidence_ids.slice(-1), d)];
+  }
+  const blk = a.blockers.find((b) => b.code === "insufficient_evidence") || a.blockers[0];
+  if (blk) return [blk.text, " ", chips(blk.evidence_ids, d)];
+  const att = sub[0];
+  return [att ? [idChip(att.ref_id, d), ` was submitted ${mins(att)}. `] : "", "No late flag or score difference was found in the records."];
+}
 
 function evidenceView() {
-  const d = state.detail, a = d.analysis, s = a.score_state;
-  return h("div", {},
-    caseHeader(d),
-    h("section", { class: "panel" }, h("h3", {}, "Warnings from the rule engine"),
-      a.warnings.length
-        ? h("ul", { class: "warn-list" }, a.warnings.map((w) => h("li", {}, w.text, " ", ids(w.evidence_ids))))
-        : h("div", { class: "muted" }, "No warnings.")),
-    h("div", { class: "grid2" }, attemptsPanel(a), scorePanel(s)),
-    h("div", { class: "grid2" }, policyPanel(d), reviewPanel(d)),
-    timelinePanel(d.evidence));
+  const d = S.detail, a = d.analysis;
+  const cta = h("a", { class: "btn primary big", href: `#/case/${d.case.id}/decision` }, "Review decision");
+  const open = d.review_items.filter((r) => r.status === "open");
+  const aside = h("aside", { class: "aside" },
+    h("section", { class: "panel sticky" },
+      h("h2", {}, "What needs a decision"),
+      h("p", { class: "route" }, routeLabel(d)),
+      open.length > 0 && h("ul", { class: "plain" }, open.map((r) => h("li", {},
+        h("div", {}, r.title), h("div", { class: "meta" }, `Route: ${r.route_to}`, " ", chips(r.evidence_ids, d))))),
+      a.warnings.length > 0 && h("div", { class: "flags" }, h("h3", {}, "Flags"),
+        h("ul", { class: "plain" }, a.warnings.map((w) => h("li", { class: "flag" }, w.text, " ", chips(w.evidence_ids, d))))),
+      h("div", { class: "meta" }, "Rules suggest: ", h("strong", {}, nextStep({ ...d.case, status: "New", suggested_action: a.suggested_action }))),
+      d.case.status !== "Closed" ? cta : h("a", { class: "btn", href: `#/case/${d.case.id}/decision` }, "View decision")));
+
+  return h("div", { class: "page" },
+    noticeEl(),
+    caseHeader(d, "evidence"),
+    h("section", { class: "summary" }, h("h2", {}, "What the records show"), h("p", { class: "lead" }, factSummary(d))),
+    h("div", { class: "cols" },
+      h("div", { class: "colmain" },
+        messagesSection(d), submissionSection(d), scoreSection(d), policySection(d), auditSection(d)),
+      aside));
 }
 
-function attemptsPanel(a) {
-  const dl = a.deadline;
-  return h("section", { class: "panel" }, h("h3", {}, "Submission vs deadline"),
-    h("div", {}, "Submission state: ", h("strong", {}, a.submission_state.replace("_", " "))),
-    dl && h("div", {}, "Deadline: ", when(dl.ts), " ", ids([dl.ref_id])),
-    h("table", {},
-      h("thead", {}, h("tr", {}, ["Attempt", "Time", "State", "vs deadline", "Counted"].map((t) => h("th", {}, t)))),
-      h("tbody", {}, a.attempts.map((t) => h("tr", {},
-        h("td", { class: "id" }, t.ref_id), h("td", {}, when(t.ts)), h("td", {}, t.state.replace("_", " ")),
-        h("td", { class: t.late ? "late" : "" },
-          t.minutes_vs_deadline == null ? "-" :
-          t.minutes_vs_deadline > 0 ? `${t.minutes_vs_deadline} min late` : `${-t.minutes_vs_deadline} min early`),
-        h("td", {}, t.counted ? "Yes (policy default: newest)" : "")))),
-      !a.attempts.length && h("tbody", {}, h("tr", {}, h("td", { colspan: 5 }, "No attempts recorded.")))));
+function messagesSection(d) {
+  const msgs = d.evidence.filter((e) => e.source_type === "message");
+  return h("section", { class: "block" }, h("h2", {}, "Messages"),
+    msgs.map((m) => h("article", { class: `msg ${m.payload.direction}` },
+      h("div", { class: "msghead" },
+        h("strong", {}, m.payload.direction === "inbound" ? "Student message" : "Prior reply"),
+        h("span", { class: "meta" }, ` ${channelName(m.payload.channel)} · ${m.payload.author} · ${fmt(m.ts, true)} `), idChip(m.ref_id, d)),
+      h("blockquote", {}, m.source_text))));
 }
 
-function scorePanel(s) {
-  const row = (label, val, src, cls) => h("tr", {},
-    h("td", {}, label), h("td", { class: "num " + (cls || "") }, val), h("td", {}, ids(src)));
-  const rubricIds = s.rubric_rows.map((r) => r.ref_id);
-  const scoreId = s.evidence_ids.filter((i) => i.startsWith("SCORE"));
-  return h("section", { class: "panel" }, h("h3", {}, "Score state (computed by code)"),
-    h("table", {},
-      h("thead", {}, h("tr", {}, ["Item", "Value", "Source"].map((t) => h("th", {}, t)))),
-      h("tbody", {},
-        row("Rubric total", `${num(s.rubric_total)} of ${num(s.rubric_max)}`, rubricIds),
-        row("Late deduction recorded", num(s.late_deduction_applied), scoreId),
-        row("Late deduction expected by policy", num(s.expected_deduction), [s.basis && s.basis.attempt]),
-        row("Final score (rubric - expected deduction)", num(s.expected_final), []),
-        row("Entered score", num(s.entered), scoreId),
-        row("Posted score", num(s.posted), scoreId),
-        row("Graded / posted", `${s.graded ? "graded" : "not graded"} / ${s.posted == null ? "not posted" : "posted"}`, scoreId))),
-    h("h3", { style: "margin-top:10px" }, "Differences"),
-    s.differences.length
-      ? s.differences.map((x) => h("div", { class: "flag" }, x.text, " ", ids(x.evidence_ids)))
-      : h("div", { class: "muted" }, "No differences found by the rules."),
-    s.rubric_rows.length > 0 && h("details", {}, h("summary", {}, "Rubric rows"),
-      h("table", {}, s.rubric_rows.map((r) => h("tr", {},
-        h("td", { class: "id" }, r.ref_id), h("td", {}, r.label), h("td", { class: "num" }, `${r.awarded} of ${r.max}`))))),
-    s.scenarios.length > 1 && h("div", { class: "muted small", style: "margin-top:8px" },
-      "Computed what-if per attempt (information only, nothing is applied): ",
-      s.scenarios.map((x) => `${x.attempt}: deduction ${num(x.deduction)}, final ${num(x.final)}. `)));
+function submissionSection(d) {
+  const a = d.analysis, dl = a.deadline;
+  const nodes = a.attempts.map((t) => ({ kind: "attempt", ts: t.ts, t }));
+  if (dl) nodes.push({ kind: "deadline", ts: dl.ts });
+  nodes.sort((x, y) => Date.parse(x.ts) - Date.parse(y.ts));
+  const stateText = { unreadable: "Unreadable file", empty_file: "Empty file", alternate_evidence: "Alternate evidence, not a Canvas submission" };
+  const sub = d.evidence.find((e) => e.source_type === "submission_status");
+  const items = nodes.map((n) => {
+    if (n.kind === "deadline") {
+      return h("li", { class: "tl deadline" }, h("div", { class: "tltime" }, h("div", { class: "clock" }, n.ts.slice(11, 16)), h("div", { class: "meta" }, fmt(n.ts).split(",")[0])),
+        h("div", { class: "tlbody" }, h("strong", {}, "Deadline"), " ", idChip(dl.ref_id, d), h("div", { class: "meta" }, "Anything after this line is late under the policy.")));
+    }
+    const t = n.t;
+    const cls = t.state !== "submitted" ? "problem" : t.late ? "late" : "ontime";
+    return h("li", { class: `tl attempt ${cls}` },
+      h("div", { class: "tltime" }, h("div", { class: "clock" }, t.ts.slice(11, 16)), h("div", { class: "meta" }, fmt(t.ts).split(",")[0])),
+      h("div", { class: "tlbody" },
+        h("div", {}, h("strong", {}, `Attempt ${a.attempts.indexOf(t) + 1}`), " ", idChip(t.ref_id, d), " ",
+          t.state === "submitted" ? h("span", { class: `badge ${t.late ? "warn" : "ok"}` }, t.late ? "Late" : "On time") : h("span", { class: "badge warn" }, stateText[t.state] || t.state),
+          t.counted && h("span", { class: "badge" }, "Graded attempt")),
+        t.state === "submitted" && h("div", { class: "meta" }, mins(t)), t.file && h("div", { class: "meta mono" }, t.file)));
+  });
+  if (!a.attempts.length) {
+    items.push(h("li", { class: "tl attempt problem" }, h("div", { class: "tltime" }, h("div", { class: "clock" }, "--:--")),
+      h("div", { class: "tlbody" }, h("strong", {}, "No submission recorded"), " ", sub && idChip(sub.ref_id, d),
+        h("div", { class: "meta" }, "Canvas shows no file for this assignment."))));
+  }
+  return h("section", { class: "block" }, h("h2", {}, "Submission vs deadline"), h("ol", { class: "timeline" }, items));
 }
 
-function policyPanel(d) {
-  const a = d.analysis;
-  const pol = d.evidence.find((e) => e.source_type === "policy");
+function stat(label, value, note, emphasis) {
+  return h("div", { class: `stat ${emphasis || ""}` }, h("div", { class: "statlabel" }, label), h("div", { class: "statval" }, value), note && h("div", { class: "meta" }, note));
+}
+
+function scoreSection(d) {
+  const s = d.analysis.score_state;
+  const hasScore = s.rubric_total != null || s.entered != null;
+  const score = s.evidence_ids.filter((i) => i.startsWith("SCORE"));
+  if (!hasScore) {
+    return h("section", { class: "block" }, h("h2", {}, "Score reconciliation"),
+      h("p", { class: "muted" }, "No rubric or entered score is recorded for this case yet."));
+  }
+  const diff = s.differences.find((x) => x.code === "entered_vs_expected");
+  const max = s.rubric_max || s.rubric_total || 1;
+  const bar = (label, v, cls) => h("div", { class: "barrow" }, h("span", { class: "barlabel" }, label),
+    h("span", { class: "bartrack" }, h("span", { class: `barfill ${cls}`, style: `width:${Math.max(0, Math.min(100, (v / max) * 100))}%` })),
+    h("span", { class: "barval" }, num(v)));
+  return h("section", { class: "block" }, h("h2", {}, "Score reconciliation"),
+    h("p", { class: "meta" }, "All values below are computed by rules from the records. Nothing is auto-corrected."),
+    h("div", { class: "stats" },
+      stat("Rubric total", `${num(s.rubric_total)} / ${num(s.rubric_max)}`, "Sum of rubric rows"),
+      stat("Late deduction recorded", num(s.late_deduction_applied), "In the gradebook"),
+      stat("Deduction expected", num(s.expected_deduction), "From policy and counted attempt"),
+      stat("Final (computed)", num(s.expected_final), "Rubric total minus expected deduction"),
+      stat("Entered score", num(s.entered), "Gradebook entry", diff ? "diff" : ""),
+      stat("Posted to student", s.posted == null ? "Not posted" : num(s.posted), s.graded ? "Graded" : "Not graded")),
+    s.rubric_total != null && s.entered != null && h("div", { class: "bars", "aria-label": "Rubric total compared with entered score" },
+      bar("Rubric total", s.rubric_total, "a"), bar("Entered", s.entered, diff ? "b diff" : "b"),
+      diff && h("p", { class: "diffline" }, `Entered is ${num(Math.abs(diff.amount))} ${diff.amount < 0 ? "below" : "above"} the computed final. Sources: `, chips(diff.evidence_ids, d))),
+    s.differences.filter((x) => x !== diff).map((x) => h("p", { class: "flag" }, x.text, " ", chips(x.evidence_ids, d))),
+    s.scenarios.length > 1 && h("p", { class: "meta" }, "What-if by attempt (information only, nothing applied): ",
+      s.scenarios.map((x) => `${x.attempt}: deduction ${num(x.deduction)}, final ${num(x.final)}. `)),
+    s.rubric_rows.length > 0 && h("details", { class: "more" }, h("summary", {}, `Rubric rows (${s.rubric_rows.length})`),
+      h("table", { class: "mini" }, h("thead", {}, h("tr", {}, ["Row", "Awarded", "Source"].map((t) => h("th", { scope: "col" }, t)))),
+        h("tbody", {}, s.rubric_rows.map((r) => h("tr", {}, h("td", {}, r.label), h("td", {}, `${r.awarded} of ${r.max}`), h("td", {}, idChip(r.ref_id, d))))))),
+    h("p", { class: "meta" }, "Score record: ", chips(score, d)));
+}
+
+function policySection(d) {
+  const a = d.analysis, pol = d.evidence.find((e) => e.source_type === "policy");
   const apr = d.evidence.filter((e) => e.source_type === "approval");
-  return h("section", { class: "panel" }, h("h3", {}, "Policy and approval evidence"),
-    pol
-      ? h("div", {}, h("span", { class: "id" }, pol.ref_id), " (version ", a.policy.version, ")",
-          h("div", { class: "src-label" }, "Source text"), h("div", { class: "src" }, pol.source_text))
-      : h("div", { class: "flag" }, `Policy ${a.policy.version || "(none)"} not found in the records.`),
-    h("h3", { style: "margin-top:10px" }, "Professor approvals"),
-    apr.length
-      ? apr.map((e) => h("div", {}, h("span", { class: "id" }, e.ref_id), " ", when(e.ts), ": ", e.summary,
-          e.source_text && ` - "${e.source_text}"`))
-      : h("div", { class: "flag" }, "Insufficient evidence: no professor approval on file."));
+  let policyBody;
+  if (pol) {
+    const parts = pol.source_text.split(/ (?=\d\. )/);
+    const p = a.policy.params;
+    policyBody = [
+      h("p", {}, parts.slice(0, 2).join(" "), " "), idChip(pol.ref_id, d),
+      p && h("p", { class: "meta" }, `Computed rule: submissions up to ${p.max_late_hours} hours late lose ${p.late_percent}% of the maximum points; the ${p.grade_basis === "latest_attempt" ? "newest attempt is graded" : p.grade_basis}; exceptions need the ${p.exception_authority}.`),
+      h("details", { class: "more" }, h("summary", {}, "Expand full policy"), h("blockquote", {}, pol.source_text)),
+    ];
+  } else {
+    policyBody = h("div", { class: "notice warn", role: "note" }, h("strong", {}, "Policy not found. "),
+      `The assignment refers to ${a.policy.version || "a policy"} but no such policy record exists, so lateness cannot be judged. The case stays on hold until a policy is confirmed.`);
+  }
+  return h("section", { class: "block" }, h("h2", {}, "Policy and approvals"), policyBody,
+    h("h3", {}, "Professor approvals"),
+    apr.length ? apr.map((e) => h("p", {}, idChip(e.ref_id, d), ` ${fmt(e.ts, true)}: ${e.summary}`, e.source_text ? ` - "${e.source_text}"` : ""))
+      : h("p", { class: "flag" }, "Insufficient evidence: no professor approval on file."));
 }
 
-function reviewPanel(d) {
-  return h("section", { class: "panel" }, h("h3", {}, "Review items"),
-    d.review_items.length
-      ? h("ul", { class: "claims" }, d.review_items.map((r) => h("li", {},
-          h("strong", {}, r.title), ` (route: ${r.route_to}, ${r.status}) `, ids(r.evidence_ids))))
-      : h("div", { class: "muted" }, "None."),
-    h("h3", { style: "margin-top:10px" }, "Rule-based suggestion"),
-    h("div", {}, h("strong", {}, d.analysis.suggested_action.replace("_", " ")),
-      ` (route: ${d.analysis.route.replace("_", " ")})`),
-    h("ul", { class: "claims" }, d.analysis.reasons.map((r) => h("li", {}, r))));
+function auditSection(d) {
+  const TYPE = { message: "Message", attempt: "Attempt", deadline: "Deadline", policy: "Policy", rubric: "Rubric", score: "Score", approval: "Approval", submission_status: "Submission status" };
+  return h("section", { class: "block" },
+    h("details", { id: "audit", class: "more" },
+      h("summary", {}, `Full audit timeline (${d.evidence.length} records, oldest first)`),
+      h("ol", { class: "audit" }, d.evidence.map((e) => h("li", { id: `ev-${e.ref_id}` },
+        h("div", { class: "audtime" }, fmt(e.ts, true)),
+        h("div", {}, h("span", { class: "idchip plain" }, e.ref_id), " ", h("span", { class: "meta" }, TYPE[e.source_type] || e.source_type), h("div", {}, e.summary),
+          e.source_text && h("blockquote", {}, e.source_text),
+          h("details", { class: "raw" }, h("summary", {}, "Raw record"), h("pre", {}, JSON.stringify(e.payload, null, 2)))))))));
 }
 
-function timelinePanel(evidence) {
-  return h("section", { class: "panel" }, h("h3", {}, "Evidence timeline (time order, each with a source id)"),
-    h("ol", { class: "timeline" }, evidence.map((e) => h("li", {},
-      h("div", {}, when(e.ts)),
-      h("div", {}, h("div", { class: "id" }, e.ref_id), h("div", { class: "type" }, e.source_type.replace("_", " "))),
-      h("div", {}, e.summary,
-        e.source_text && h("div", {}, h("div", { class: "src-label" }, "Source text"), h("div", { class: "src" }, e.source_text)))))));
+// ------------------------------------------------------------------ decision screen
+
+function choosePrimary(role, perms, a) {
+  const ok = (x) => perms[x] && perms[x].enabled;
+  let want = a.suggested_action;
+  if (role === "professor" && want === "escalate") want = "approve";
+  if (ok(want)) return want;
+  return ["request_info", "hold", "approve", "escalate", "reject"].find(ok) || null;
 }
-
-// ------------------------------------------------------------------ decision desk
-
-const ACTION_LABEL = { approve: "Approve", hold: "Hold", reject: "Reject",
-  escalate: "Escalate to professor", request_info: "Request student info" };
 
 function decisionView() {
-  const d = state.detail, a = d.analysis, perms = d.permissions[state.role], dr = d.draft;
-  const note = h("textarea", { rows: 2, id: "note", placeholder: "Note (required except for Approve)" });
+  const d = S.detail, a = d.analysis, dr = d.draft, role = S.role, perms = d.permissions[role];
+  const closed = d.case.status === "Closed";
+  const approved = !!(dr && dr.approved_at);
+  const primary = closed ? null : choosePrimary(role, perms, a);
   const attemptItem = d.review_items.some((r) => r.kind === "attempt_basis" && r.status === "open");
-  const attemptSel = attemptItem && h("label", {}, "Counted attempt ",
-    h("select", { id: "counted" }, h("option", { value: "" }, "Select..."),
-      a.attempts.filter((t) => t.state === "submitted").map((t) => h("option", { value: t.ref_id }, `${t.ref_id} (${when(t.ts)})`))));
-  const body = h("textarea", { rows: 12, id: "body" }, dr ? (dr.body_edited ?? dr.body_ai) : "");
-  const flagBox = h("div", { id: "liveflags" });
+  const NOTE_REQ = ["hold", "reject", "escalate", "request_info"];
+
+  const noteErr = h("p", { class: "fielderr", id: "note-err", role: "alert" });
+  const countedErr = h("p", { class: "fielderr", id: "counted-err", role: "alert" });
+  const formErr = h("div", { id: "form-err", role: "alert" });
+  const note = h("textarea", { id: "note", class: "input", rows: 3, "aria-describedby": "note-err note-help",
+    oninput: (e) => { S.ui.note = e.target.value; noteErr.textContent = ""; } }, S.ui.note);
+  const counted = h("select", { id: "counted", class: "input", disabled: role !== "professor" || closed, "aria-describedby": "counted-err counted-help",
+    onchange: (e) => { S.ui.counted = e.target.value; countedErr.textContent = ""; } },
+    h("option", { value: "" }, "Select an attempt"),
+    a.attempts.filter((t) => t.state === "submitted").map((t) => h("option", { value: t.ref_id, selected: S.ui.counted === t.ref_id }, `${t.ref_id}: ${fmt(t.ts)}, ${mins(t)}`)));
+
+  const flagBox = h("div", { id: "liveflags", "aria-live": "polite" });
+  const dirtyNote = h("span", { class: "dirty", hidden: !isDirty() }, "Unsaved edits");
   let timer;
-  body.addEventListener("input", () => {
-    clearTimeout(timer);
-    timer = setTimeout(async () => {
-      const r = await api(`/api/cases/${d.case.id}/draft/check`, { method: "POST", body: { body: body.value } });
-      flagBox.replaceChildren(...r.flags.map(flagEl));
-    }, 400);
-  });
+  const body = h("textarea", { id: "body", class: "input draft", rows: 14, readonly: approved || closed,
+    oninput: (e) => {
+      S.ui.body = e.target.value; dirtyNote.hidden = !isDirty();
+      clearTimeout(timer);
+      timer = setTimeout(async () => {
+        if (S.ui.body == null || !body.isConnected) return; // state was reset (regenerate, save, navigation)
+        try {
+          const r = await api(`/api/cases/${d.case.id}/draft/check`, { method: "POST", body: { body: S.ui.body } });
+          flagBox.replaceChildren(...r.flags.map(flagEl));
+        } catch (err) { flagBox.replaceChildren(h("p", { class: "meta" }, `Could not check the text just now: ${err.message}`)); }
+      }, 400);
+    } }, S.ui.body ?? storedBody(dr));
 
-  const act = (name) => {
-    const p = perms[name];
-    return h("div", { class: "act" },
-      h("button", { class: name === "approve" ? "primary" : name === "escalate" ? "warn" : "", disabled: !p.enabled,
-        title: p.reason, onclick: () => submit(name, note, body, attemptSel) }, ACTION_LABEL[name]),
-      h("span", { class: "muted small" }, `-> ${p.next_status}`));
+  const buttons = [];
+  const reasons = [];
+  const mk = (action, isPrimary) => {
+    const p = perms[action];
+    const rid = `why-${action}`;
+    const btn = h("button", { type: "button", class: `btn ${isPrimary ? "primary big" : action === "reject" ? "danger" : ""}`, "data-action": action,
+      disabled: !p.enabled, "aria-describedby": !p.enabled ? rid : null, onclick: (e) => submit(action, e.currentTarget) },
+      actionLabel(action, role));
+    return h("div", { class: `act ${isPrimary ? "primary" : ""}` }, btn,
+      h("div", { class: "meta" }, `Moves to: ${p.next_status}`),
+      !p.enabled && h("div", { class: "why", id: rid }, p.reason || "Not available"));
   };
-  const why = [...new Set(Object.values(perms).filter((p) => !p.enabled).map((p) => p.reason))];
+  if (!closed) {
+    if (primary) buttons.push(mk(primary, true));
+    const others = ["approve", "hold", "escalate", "request_info", "reject"].filter((x) => x !== primary);
+    buttons.push(h("div", { class: "others" }, h("div", { class: "label" }, primary ? "Other actions" : "Actions"), others.map((x) => mk(x, false))));
+  }
+
   const sc = d.score_control;
+  const scReason = sc.recorded ? sc.recorded.rationale : !a.professor_approved ? "Requires a professor approval first." :
+    !a.score_change ? "The approved basis gives the same score as the gradebook; nothing to record." : "";
+  const scBtn = h("button", { type: "button", class: "btn", disabled: !sc.enabled, "aria-describedby": "sc-why", onclick: (e) => recordScore(e.currentTarget) }, "Record score recommendation");
 
-  return h("div", {},
-    caseHeader(d),
-    state.msg && h("div", { class: state.msg.startsWith("Error") ? "msg error" : "msg" }, state.msg),
-    h("div", { class: "grid2" },
-      h("section", { class: "panel" }, h("h3", {}, "Suggested action (rules)"),
-        h("div", {}, h("strong", {}, a.suggested_action.replace("_", " ")), `  route: ${a.route.replace("_", " ")}`),
-        h("ul", { class: "claims" }, a.reasons.map((r) => h("li", {}, r))),
-        h("div", { class: "muted small" }, "Uncertainty: " + (a.uncertainty.join(" ") || "none identified")),
-        h("h3", { style: "margin-top:10px" }, "Decision"),
-        h("div", {}, "Current status: ", pill(d.case.status), `   acting as ${state.role === "ta" ? "TA" : "Professor"} (demo role)`),
-        attemptSel, note,
-        h("div", { class: "actions" }, ["approve", "hold", "reject", "escalate", "request_info"].map(act)),
-        why.length > 0 && h("div", { class: "muted small" }, why.map((w) => h("div", {}, w))),
-        h("h3", { style: "margin-top:10px" }, "Score change"),
-        h("button", { disabled: !sc.enabled, title: sc.reason, onclick: recordScore }, "Apply score change (records a recommendation)"),
-        h("div", { class: "muted small" }, sc.recorded ? sc.recorded.rationale :
-          (a.score_change ? `Professor approval exists. Recommendation would be ${num(a.score_change.from)} -> ${num(a.score_change.to)}. No Canvas write.` :
-            (sc.reason || "Nothing to recommend. No Canvas write.")))),
-      h("section", { class: "panel" },
-        h("h3", {}, "Reply draft ", h("span", { class: "drafttag" }, "Draft only - not sent")),
-        aiStatus(d, dr),
-        body, flagBox,
-        h("div", { class: "actions" },
-          h("button", { onclick: saveDraft }, "Save edits"),
-          h("button", { onclick: regenerate }, "Regenerate draft")),
-        dr && claimList("Verified facts (cited)", dr.verified),
-        dr && claimList("Unverified (not confirmed by records)", dr.unverified),
-        dr && dr.flags.length > 0 && h("div", {}, h("h3", {}, "Guardrail flags"), dr.flags.map(flagEl)))),
-    logPanel(d));
+  return h("div", { class: "page" },
+    noticeEl(),
+    caseHeader(d, "decision"),
+    closed && h("div", { class: "notice info" }, "This case is closed. The decision and the approved reply are shown below for the record."),
+    h("ol", { class: "flow" },
+      h("li", { class: "step" }, h("h2", {}, h("span", { class: "stepno" }, "1"), "Review evidence and the recommended action"),
+        h("p", { class: "lead" }, factSummary(d)),
+        h("p", {}, h("strong", {}, routeLabel(d)), ". Rules suggest: ", h("strong", {}, nextStep({ ...d.case, status: "New", suggested_action: a.suggested_action })), "."),
+        h("ul", { class: "plain" }, a.reasons.map((r) => h("li", {}, r))),
+        h("p", { class: "meta" }, "Uncertainty: " + (a.uncertainty.join(" ") || "none identified by the rules.")),
+        h("a", { href: `#/case/${d.case.id}/evidence` }, "Open the full evidence")),
+      h("li", { class: "step" }, h("h2", {}, h("span", { class: "stepno" }, "2"), "Choose the attempt and add a note"),
+        attemptItem ? h("div", { class: "formrow" }, h("label", { for: "counted" }, "Attempt that counts as the submission"), counted,
+          h("p", { class: "meta", id: "counted-help" }, role === "professor" ? "Required to approve. This is the professor's call." : "Only the professor chooses which attempt counts. Switch the demo role to try it."), countedErr)
+          : h("p", { class: "meta" }, "No attempt choice is needed for this case."),
+        h("div", { class: "formrow" }, h("label", { for: "note" }, "Note for the decision log"), note,
+          h("p", { class: "meta", id: "note-help" }, "Required for every action except Approve. Stored with your name, role and time."), noteErr)),
+      h("li", { class: "step" }, h("h2", {}, h("span", { class: "stepno" }, "3"), "Review the reply"),
+        h("div", { class: "draftmeta" }, h("span", { class: "drafttag" }, "Draft only - not sent"), dirtyNote),
+        h("p", { class: "meta" }, provenance(dr)),
+        h("label", { for: "body", class: "label" }, approved ? "Approved reply (draft, not sent)" : "Reply to student (editable draft)"), body, flagBox,
+        !approved && !closed && h("div", { class: "btnrow" },
+          h("button", { type: "button", class: "btn", onclick: (e) => saveDraft(e.currentTarget) }, "Save edits"),
+          h("button", { type: "button", class: "btn", onclick: (e) => regenerate(e.currentTarget) }, "Regenerate draft")),
+        dr && dr.flags.length > 0 && h("div", {}, h("h3", {}, "Guardrail flags"), dr.flags.map(flagEl)),
+        dr && claimBlock("Verified facts (each cites a record)", dr.verified, d), dr && claimBlock("Unverified (not confirmed by the records)", dr.unverified, d)),
+      h("li", { class: "step" }, h("h2", {}, h("span", { class: "stepno" }, "4"), "Record the decision"),
+        h("p", { class: "meta" }, `Acting as ${role === "ta" ? "TA" : "Professor"} (demo role). Recording a decision changes this case's status and writes a log entry. Nothing is sent and nothing changes in Canvas.`),
+        formErr, buttons,
+        h("div", { class: "scorebox" }, h("h3", {}, "Score recommendation"),
+          h("p", { class: "meta" }, "Records a recommendation inside GradeCase only. No Canvas change."),
+          scBtn, h("p", { class: "meta", id: "sc-why" }, scReason),
+          a.score_change && !sc.recorded && h("p", {}, `Approved basis would recommend ${num(a.score_change.from)} → ${num(a.score_change.to)}.`)))),
+    logSection(d));
 }
 
-function aiStatus(d, dr) {
-  if (!dr) return h("div", { class: "muted" }, "No draft yet.");
-  const t = dr.ai_status === "unavailable" ? "AI unavailable, rules-only view (template draft from computed values)."
-    : dr.ai_status === "mock" ? "Mock AI (offline, deterministic). No model was called."
-    : "Drafted by the configured inference model; checked by guardrails.";
-  return h("div", { class: dr.ai_status === "unavailable" ? "flag" : "muted small" }, t);
+function provenance(dr) {
+  if (!dr) return "No draft yet.";
+  if (dr.ai_status === "unavailable") return "AI unavailable, rules-only view. This is a template built from the computed records.";
+  if (dr.ai_status === "mock") return "Template draft built from the computed records. Mock mode: no AI model was called.";
+  return "Drafted by the configured model, then checked by guardrails.";
 }
 
-const flagEl = (f) => h("div", { class: "flag" }, f.message, f.code_value != null && h("strong", {}, `  Code value: ${f.code_value}`));
+const flagEl = (f) => h("div", { class: "flag" }, f.message, f.code_value != null && h("strong", {}, ` Code value: ${f.code_value}`));
 
-function claimList(title, claims) {
-  return h("div", {}, h("h3", { style: "margin-top:8px" }, title),
-    claims.length ? h("ul", { class: "claims" }, claims.map((c) => h("li", {}, c.text, " ", ids(c.evidence_ids),
-      (c.flags || []).filter((f) => f.kind === "needs_verification").map((f) => h("span", { class: "badge solid" }, `Needs verification (code: ${f.code_value})`)))))
-      : h("div", { class: "muted" }, "None."));
+function claimBlock(title, claims, d) {
+  return h("details", { class: "more" }, h("summary", {}, `${title} (${claims.length})`),
+    claims.length ? h("ul", { class: "plain" }, claims.map((c) => h("li", {}, c.text, " ", chips(c.evidence_ids, d),
+      (c.flags || []).filter((f) => f.kind === "needs_verification").map((f) => h("span", { class: "badge warn" }, `Needs verification (code: ${f.code_value})`)))))
+      : h("p", { class: "meta" }, "None."));
 }
 
-function logPanel(d) {
-  return h("section", { class: "panel" }, h("h3", {}, "Decision log"),
-    d.decisions.length
-      ? h("table", {},
-          h("thead", {}, h("tr", {}, ["Time (UTC)", "Who", "Role", "Action", "Status change", "Note"].map((t) => h("th", {}, t)))),
-          h("tbody", {}, d.decisions.map((x) => h("tr", {},
-            h("td", {}, when(x.ts)), h("td", {}, x.actor), h("td", {}, x.role), h("td", {}, x.action.replace(/_/g, " ")),
-            h("td", {}, x.from_status ? `${x.from_status} -> ${x.to_status}` : "-"), h("td", {}, x.note)))))
-      : h("div", { class: "muted" }, "No decisions yet."));
+function logSection(d) {
+  return h("section", { class: "block" }, h("h2", {}, "Decision log"),
+    d.decisions.length ? h("ul", { class: "activity" }, [...d.decisions].reverse().map((x) => h("li", {},
+      h("div", {}, h("strong", {}, x.actor), ` (${x.role}) `, x.action.replace(/_/g, " "),
+        x.from_status && x.from_status !== x.to_status && ` · ${x.from_status} → ${x.to_status}`),
+      h("div", { class: "meta" }, fmt(x.ts, true)), x.note && h("div", { class: "note" }, x.note))))
+      : h("p", { class: "muted" }, "No decisions recorded yet."));
 }
 
-async function reload(message) {
-  state.msg = message;
-  state.detail = await api(`/api/cases/${state.detail.case.id}`);
-  route();
+// ------------------------------------------------------------------ decision actions
+
+function setBusy(btn, text) {
+  const all = [...document.querySelectorAll(".act button, .btnrow button, .scorebox button")];
+  all.forEach((b) => { b.dataset.was = b.disabled ? "1" : ""; b.disabled = true; });
+  const old = btn.textContent;
+  btn.textContent = text;
+  return () => { all.forEach((b) => { b.disabled = b.dataset.was === "1"; }); btn.textContent = old; };
 }
 
-async function submit(action, note, body, attemptSel) {
+function showErr(text) {
+  const box = document.getElementById("form-err");
+  if (box) box.replaceChildren(h("div", { class: "notice error" }, text));
+  say(text);
+}
+
+async function submit(action, btn) {
+  const d = S.detail;
+  const attemptItem = d.review_items.some((r) => r.kind === "attempt_basis" && r.status === "open");
+  const noteVal = S.ui.note.trim();
+  document.getElementById("form-err").replaceChildren();
+  let bad = null;
+  if (action !== "approve" && !noteVal) {
+    document.getElementById("note-err").textContent = "Add a note: it is required for this action.";
+    bad = "note";
+  }
+  if (action === "approve" && S.role === "professor" && attemptItem && !S.ui.counted) {
+    document.getElementById("counted-err").textContent = "Choose which attempt counts before approving.";
+    bad = bad || "counted";
+  }
+  if (bad) { document.getElementById(bad).focus(); return; }
+  const done = setBusy(btn, "Recording...");
   try {
-    const counted = attemptSel ? document.getElementById("counted").value : null;
-    const out = await api(`/api/cases/${state.detail.case.id}/decision`, { method: "POST",
-      body: { role: state.role, action, note: note.value, counted_attempt: counted || null, body: body.value } });
-    state.detail = out;
-    state.msg = `Recorded: ${ACTION_LABEL[action]}. Status is now ${out.case.status}. Nothing was sent.`;
-  } catch (e) { state.msg = `Error: ${e.message}`; }
-  route();
+    const before = d.case.status;
+    const out = await api(`/api/cases/${d.case.id}/decision`, { method: "POST", body: {
+      role: S.role, action, note: noteVal, counted_attempt: S.ui.counted || null,
+      body: S.ui.body ?? storedBody(d.draft) } });
+    S.detail = out;
+    S.ui = { caseId: d.case.id, note: "", counted: "", body: null };
+    S.notice = { kind: "success", title: "Decision recorded.",
+      text: `${actionLabel(action, S.role)}. Status: ${before} → ${out.case.status}. Logged with your name and time. Nothing was sent. No Canvas change.` };
+    say("Decision recorded.");
+    render();
+    window.scrollTo(0, 0);
+  } catch (e) {
+    done();
+    showErr(`Not recorded: ${e.message}`); // inputs are kept so nothing needs retyping
+  }
 }
 
-async function saveDraft() {
+async function saveDraft(btn) {
+  const done = setBusy(btn, "Saving...");
   try {
-    state.detail = await api(`/api/cases/${state.detail.case.id}/draft`, { method: "PUT", body: { body: document.getElementById("body").value } });
-    state.msg = "Draft edits saved (not sent).";
-  } catch (e) { state.msg = `Error: ${e.message}`; }
-  route();
+    S.detail = await api(`/api/cases/${S.detail.case.id}/draft`, { method: "PUT", body: { body: S.ui.body ?? storedBody(S.detail.draft) } });
+    S.ui.body = null;
+    S.notice = { kind: "success", title: "Draft saved.", text: "Your edits are stored. The reply is still a draft and was not sent." };
+    render();
+  } catch (e) { done(); showErr(`Could not save the draft: ${e.message}`); }
 }
 
-async function regenerate() {
+async function regenerate(btn) {
+  if (!confirmDiscard("regenerate the draft")) return;
+  const done = setBusy(btn, "Regenerating...");
   try {
-    state.detail = await api(`/api/cases/${state.detail.case.id}/draft`, { method: "POST" });
-    state.msg = "Draft regenerated.";
-  } catch (e) { state.msg = `Error: ${e.message}`; }
-  route();
+    S.detail = await api(`/api/cases/${S.detail.case.id}/draft`, { method: "POST" });
+    S.ui.body = null;
+    S.notice = { kind: "info", title: "Draft regenerated.", text: "Review it before recording a decision." };
+    render();
+  } catch (e) { done(); showErr(`Could not regenerate the draft: ${e.message}`); }
 }
 
-async function recordScore() {
+async function recordScore(btn) {
+  const done = setBusy(btn, "Recording...");
   try {
-    state.detail = await api(`/api/cases/${state.detail.case.id}/score-recommendation`, { method: "POST", body: { role: state.role } });
-    state.msg = "Score recommendation recorded. No change was made in Canvas.";
-  } catch (e) { state.msg = `Error: ${e.message}`; }
-  route();
+    S.detail = await api(`/api/cases/${S.detail.case.id}/score-recommendation`, { method: "POST", body: { role: S.role } });
+    S.notice = { kind: "success", title: "Score recommendation recorded.", text: "It exists only inside GradeCase. No Canvas change was made." };
+    render();
+  } catch (e) { done(); showErr(`Could not record the recommendation: ${e.message}`); }
 }
 
 // ------------------------------------------------------------------ boot
 
+function setRole(role) {
+  if (role === S.role) return;
+  if (!confirmDiscard("switch role")) return;
+  S.role = role;
+  try { localStorage.setItem("gc_role", role); } catch (e) { /* ignore */ }
+  S.notice = null;
+  render();
+}
+
 async function boot() {
-  state.cfg = await api("/api/config");
-  document.getElementById("name").textContent = state.cfg.product_name;
-  document.getElementById("tagline").textContent = state.cfg.product_tagline;
-  document.getElementById("banner").textContent = state.cfg.banner;
-  document.title = state.cfg.product_name;
-  document.getElementById("mode").textContent = state.cfg.llm_mode === "mock"
-    ? "AI: mock mode (offline, deterministic). Rules compute all numbers."
-    : `AI: Vultr Serverless Inference${state.cfg.model ? " (" + state.cfg.model + ")" : ""}. Rules compute all numbers.`;
-  document.getElementById("role-ta").addEventListener("click", () => setRole("ta"));
-  document.getElementById("role-professor").addEventListener("click", () => setRole("professor"));
-  document.getElementById("reset").addEventListener("click", async () => {
-    if (!confirm("Reset all demo data (cases, decisions, drafts)?")) return;
-    await api("/api/demo/reset?confirm=true", { method: "POST" });
-    state.detail = null; state.msg = "Demo data reset.";
-    location.hash = "#/queue"; route();
+  try {
+    S.cfg = await api("/api/config");
+    $("name").textContent = S.cfg.product_name;
+    $("banner").textContent = S.cfg.banner;
+    $("mode").textContent = S.cfg.llm_mode === "mock"
+      ? "Mock mode: reply drafts are templates built from computed records. No AI model is called."
+      : `Reply drafts use Vultr Serverless Inference${S.cfg.model ? " (" + S.cfg.model + ")" : ""}; all numbers are computed by rules.`;
+  } catch (e) { S.cfg = { llm_mode: "mock" }; }
+  $("role-ta").addEventListener("click", () => setRole("ta"));
+  $("role-professor").addEventListener("click", () => setRole("professor"));
+  $("reset").addEventListener("click", async () => {
+    if (!confirm("Reset all demo data? This deletes recorded decisions, drafts and merges and restores the synthetic cases.")) return;
+    try {
+      await api("/api/demo/reset?confirm=true", { method: "POST" });
+      S.detail = null; S.ui = { caseId: null, note: "", counted: "", body: null };
+      S.notice = { kind: "info", title: "Demo data reset.", text: "The synthetic cases were restored." };
+      if (location.hash !== "#/queue") { S.hash = "#/queue"; location.hash = "#/queue"; } else render();
+    } catch (e) { S.notice = { kind: "error", title: "Reset failed.", text: e.message }; render(); }
   });
-  window.addEventListener("hashchange", () => { state.msg = null; route(); });
-  setRole(state.role);
+  window.addEventListener("hashchange", () => {
+    if (S.ignoreHash) { S.ignoreHash = false; return; }
+    if (!confirmDiscard("leave this page")) { S.ignoreHash = true; location.hash = S.hash; return; }
+    S.hash = location.hash || "#/queue";
+    S.notice = null;
+    render();
+  });
+  window.addEventListener("beforeunload", (e) => { if (isDirty()) { e.preventDefault(); e.returnValue = ""; } });
+  window.addEventListener("unhandledrejection", (e) => {
+    const text = String((e.reason && e.reason.message) || e.reason);
+    S.notice = { kind: "error", title: "Something went wrong.", text };
+    say(text);
+  });
+  S.hash = location.hash || "#/queue";
+  render();
 }
 boot();
