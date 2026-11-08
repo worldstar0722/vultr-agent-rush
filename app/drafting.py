@@ -57,6 +57,15 @@ def finalize_reply(text: str, approval_ref: str, counted_attempt: str | None) ->
     return f"{text}\n\n{statement}"
 
 
+_ID_RE = re.compile(r"\b(?:POL|ATT|MSG|RUB|DL|SCORE|APR|SUB)-[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*\b")
+
+
+def scrub(text: str, valid_ids: set[str] | list[str]) -> str:
+    """Replace record ids that do not exist (e.g. a missing policy) so no fake id is printed."""
+    ok = set(valid_ids)
+    return _ID_RE.sub(lambda m: m[0] if m[0] in ok else "the referenced record", text)
+
+
 def _n(v: float | None) -> str:
     return "n/a" if v is None else f"{v:g}"
 
@@ -186,6 +195,9 @@ def build_template_draft(bundle: dict[str, Any]) -> dict[str, Any]:
         "verified": verified,
         "unverified": unverified,
         "reply": reply,
-        "rationale": " ".join(a["reasons"]),
-        "uncertainty": " ".join(a["uncertainty"]) or "None identified by the rules.",
+        "rationale": scrub(" ".join(a["reasons"]), a["ids"]),
+        "uncertainty": scrub(
+            " ".join(a["uncertainty"]) or "None identified by the rules.", a["ids"]
+        ),
+        "unresolved": [scrub(r["title"], a["ids"]) for r in a["review_items"]],
     }

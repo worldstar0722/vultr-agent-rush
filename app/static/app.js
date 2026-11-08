@@ -29,6 +29,8 @@ const S = {
   filters: { q: "", status: "", owner: "", channel: "", quick: "all" },
   ui: { caseId: null, note: "", counted: "", body: null },
   lastCase: null,
+  ai: null,
+  busy: false,
   hash: "#/queue",
   ignoreHash: false,
 };
@@ -145,10 +147,36 @@ function confirmDiscard(what) {
 
 // ------------------------------------------------------------------ shell (rail, crumbs)
 
+function aiIndicator() {
+  const a = S.ai;
+  if (!a) return [h("div", { class: "ai-title" }, "AI status unknown")];
+  const out = [];
+  const b = a.budget;
+  if (a.mode === "mock") {
+    out.push(h("div", { class: "ai-title" }, "Rules + demo drafts"), h("div", { class: "ai-sub" }, "Live AI not connected"));
+  } else if (a.mode === "misconfigured") {
+    out.push(h("div", { class: "ai-title" }, "AI not usable"), h("div", { class: "ai-sub" }, "A model id is not set on the server"));
+  } else if (a.last_success_at) {
+    out.push(h("div", { class: "ai-title" }, "Live AI: last call succeeded"), h("div", { class: "ai-sub" }, `${a.model}, ${fmt(a.last_success_at, true)}`));
+  } else {
+    out.push(h("div", { class: "ai-title" }, "Live AI configured"), h("div", { class: "ai-sub" }, `${a.model}: no successful call yet`));
+  }
+  if (a.mode === "configured" && a.last_failure && (!a.last_success_at || a.last_failure.at > a.last_success_at)) {
+    out.push(h("div", { class: "ai-sub warn" }, `Last call failed: ${a.last_failure.kind}`));
+  }
+  if (a.mode !== "mock" && b) out.push(h("div", { class: "ai-sub" }, `${b.calls_remaining} of ${b.calls_limit} lifetime AI calls left`));
+  return out;
+}
+
+async function refreshAi() {
+  try { S.ai = await api("/api/ai/status"); } catch (e) { /* keep the previous value */ }
+  $("ai").replaceChildren(...aiIndicator());
+}
+
 function renderShell(route) {
   const link = (label, href, current) =>
     h("a", { href, class: "navlink", "aria-current": current ? "page" : null }, label);
-  const nav = [link("Case Queue", "#/queue", route.screen === "queue")];
+  const nav = [link("Case Queue", "#/queue", route.screen === "queue"), link("New synthetic case", "#/new", route.screen === "intake")];
   if (route.caseId) {
     nav.push(h("div", { class: "navgroup" }, h("div", { class: "label" }, "Selected case"),
       h("div", { class: "mono navcase" }, route.caseId),
@@ -158,24 +186,24 @@ function renderShell(route) {
   $("nav").replaceChildren(...nav);
 
   const crumbs = [h("a", { href: "#/queue" }, "Cases")];
-  if (route.caseId) {
+  if (route.screen === "intake") {
+    crumbs.push(h("span", { class: "sep" }, "/"), h("span", { "aria-current": "page" }, "New synthetic case"));
+  } else if (route.caseId) {
     crumbs.push(h("span", { class: "sep" }, "/"), h("a", { href: `#/case/${route.caseId}/evidence` }, route.caseId));
     crumbs.push(h("span", { class: "sep" }, "/"), h("span", { "aria-current": "page" }, route.screen === "decision" ? "Decision" : "Evidence"));
   }
   $("crumbs").replaceChildren(...crumbs);
 
   for (const r of ["ta", "professor"]) $(`role-${r}`).setAttribute("aria-pressed", String(S.role === r));
-  const live = S.cfg && S.cfg.llm_mode !== "mock";
-  $("ai").replaceChildren(
-    h("div", { class: "ai-title" }, live ? "Live AI connected" : "Rules + demo drafts"),
-    h("div", { class: "ai-sub" }, live ? "Vultr Serverless Inference" : "Live AI not connected"));
-  document.title = `${route.screen === "queue" ? "Cases" : route.caseId} - GradeCase`;
+  $("ai").replaceChildren(...aiIndicator());
+  document.title = `${route.screen === "queue" ? "Cases" : route.screen === "intake" ? "New case" : route.caseId} - GradeCase`;
 }
 
 // ------------------------------------------------------------------ routing
 
 function parseRoute() {
   const p = location.hash.replace(/^#\/?/, "").split("/");
+  if (p[0] === "new") return { screen: "intake", caseId: null };
   if (p[0] === "case" && p[1]) return { screen: p[2] === "decision" ? "decision" : "evidence", caseId: p[1] };
   return { screen: "queue", caseId: null };
 }
@@ -187,10 +215,10 @@ async function render() {
   const view = $("view");
   renderShell(route);
   try {
-    if (route.screen === "queue") {
+    if (route.screen === "queue" || route.screen === "intake") {
       S.detail = null;
       S.ui = { caseId: null, note: "", counted: "", body: null };
-      const node = await queueView();
+      const node = route.screen === "queue" ? await queueView() : await intakeView();
       if (token === renderToken) view.replaceChildren(node);
       return;
     }
@@ -201,10 +229,7 @@ async function render() {
       S.detail = await api(`/api/cases/${route.caseId}`);
       S.refetch = false;
     }
-    if (route.screen === "decision" && !S.detail.draft) {
-      view.replaceChildren(h("p", { class: "muted pad" }, "Preparing the reply draft from computed records..."));
-      S.detail = await api(`/api/cases/${route.caseId}/draft`, { method: "POST" });
-    }
+    // Loading a page never starts an analysis: that is an explicit button, because it can cost money.
     if (token !== renderToken) return;
     view.replaceChildren(route.screen === "decision" ? decisionView() : evidenceView());
   } catch (e) {
@@ -286,7 +311,8 @@ async function queueView() {
 
   const view = h("div", { class: "page" },
     noticeEl(),
-    h("h1", {}, "Cases"),
+    h("div", { class: "pagehead" }, h("h1", {}, "Cases"),
+      h("a", { class: "btn primary", href: "#/new" }, "New synthetic case")),
     h("p", { class: "lede" }, "Open a case to see the evidence, then record a decision. Nothing here changes a grade or sends a message."),
     duplicatePanel(cases),
     h("div", { class: "toolbar" }, tabs),
@@ -374,6 +400,10 @@ function factSummary(d) {
   const basis = a.gates.find((g) => g.code === "attempt_basis");
   const counted = a.attempts.find((t) => t.counted);
   const first = sub.find((t) => t.minutes_vs_deadline != null && t.minutes_vs_deadline <= 0);
+  const rec = a.reconciliation;
+  // After a professor decision the derived facts are re-reconciled: never claim "consistent" while
+  // the gradebook still differs from the approved basis.
+  if (a.professor_approved && rec.state !== "consistent") return [rec.text, " ", chips(a.approval_ids, d)];
   if (basis && first && counted) {
     return [idChip(first.ref_id, d), ` was submitted ${mins(first)}, but the newest attempt, `, idChip(counted.ref_id, d),
       `, was ${plural(counted.minutes_vs_deadline, "minute")} late and is the one graded, with a ${num(s.late_deduction_applied)}-point late deduction.`];
@@ -386,12 +416,42 @@ function factSummary(d) {
   const blk = a.blockers.find((b) => b.code === "insufficient_evidence") || a.blockers[0];
   if (blk) return [blk.text, " ", chips(blk.evidence_ids, d)];
   const att = sub[0];
-  return [att ? [idChip(att.ref_id, d), ` was submitted ${mins(att)}. `] : "", "No late flag or score difference was found in the records."];
+  return [att ? [idChip(att.ref_id, d), ` was submitted ${mins(att)}. `] : "", rec.text];
+}
+
+function aiSourceLabel(v) {
+  return v.source === "live" ? `Live AI (${v.model})` : "Mock template (no model was called)";
+}
+
+function aiBlock(d) {
+  const wf = d.workflow, v = wf.view;
+  const head = h("h2", {}, "AI analysis");
+  if (!v) {
+    return h("section", { class: "block" }, head,
+      wf.rejected
+        ? h("p", { class: "flag" }, "The last AI reply failed validation against the records and was rejected, so there is no AI analysis to show. A rules-only draft exists instead.")
+        : h("p", { class: "muted" }, "No analysis has been run for this case. Nothing is sent to an AI model until someone clicks Run analysis on the Decision screen."),
+      h("a", { class: "btn", href: `#/case/${d.case.id}/decision` }, "Go to Decision"));
+  }
+  const rulesIssue = d.case.issue;
+  return h("section", { class: "block" }, head,
+    h("p", { class: "meta" }, aiSourceLabel(v), `. Validated against the records.`,
+      v.stale && h("span", { class: "badge warn" }, d.case.status === "Closed" ? "Generated before the decision" : "Evidence changed since this ran")),
+    h("p", {}, v.summary),
+    h("p", { class: "meta" }, `AI classification: ${v.classification.replace(/_/g, " ")}. Rules classification: ${rulesIssue.replace(/_/g, " ")}.`,
+      v.classification !== rulesIssue && h("span", { class: "badge warn" }, "They disagree")),
+    v.unresolved.length > 0 && h("div", {}, h("h3", {}, "Unresolved decisions"),
+      h("ul", { class: "plain" }, v.unresolved.map((u) => h("li", {}, u)))),
+    h("details", { class: "more" }, h("summary", {}, `Verified (${v.verified.length}) and unverified (${v.unverified.length}) statements`),
+      claimBlock("Verified: each cites a record", v.verified, d), claimBlock("Unverified: not confirmed by the records", v.unverified, d)),
+    h("p", { class: "meta" }, "Validation checks that citations exist and that numbers, times and promise wording match the records. It cannot prove every statement is correct, so a person must read the reply before approving."));
 }
 
 function evidenceView() {
   const d = S.detail, a = d.analysis;
-  const cta = h("a", { class: "btn primary big", href: `#/case/${d.case.id}/decision` }, "Review decision");
+  const closed = d.case.status === "Closed";
+  const cta = closed ? h("a", { class: "btn", href: `#/case/${d.case.id}/decision` }, "View decision record")
+    : h("a", { class: "btn primary big", href: `#/case/${d.case.id}/decision` }, "Review decision");
   const open = d.review_items.filter((r) => r.status === "open");
   const aside = h("aside", { class: "aside" },
     h("section", { class: "panel sticky" },
@@ -401,8 +461,8 @@ function evidenceView() {
         h("div", {}, r.title), h("div", { class: "meta" }, `Route: ${r.route_to}`, " ", chips(r.evidence_ids, d))))),
       a.warnings.length > 0 && h("div", { class: "flags" }, h("h3", {}, "Flags"),
         h("ul", { class: "plain" }, a.warnings.map((w) => h("li", { class: "flag" }, w.text, " ", chips(w.evidence_ids, d))))),
-      h("div", { class: "meta" }, "Rules suggest: ", h("strong", {}, nextStep({ ...d.case, status: "New", suggested_action: a.suggested_action }))),
-      d.case.status !== "Closed" ? cta : h("a", { class: "btn", href: `#/case/${d.case.id}/decision` }, "View decision")));
+      h("div", { class: "meta" }, closed ? "Status: " : "Next: ", h("strong", {}, nextStep(d.case))),
+      cta));
 
   return h("div", { class: "page" },
     noticeEl(),
@@ -410,7 +470,7 @@ function evidenceView() {
     h("section", { class: "summary" }, h("h2", {}, "What the records show"), h("p", { class: "lead" }, factSummary(d))),
     h("div", { class: "cols" },
       h("div", { class: "colmain" },
-        messagesSection(d), submissionSection(d), scoreSection(d), policySection(d), auditSection(d)),
+        aiBlock(d), messagesSection(d), submissionSection(d), scoreSection(d), policySection(d), auditSection(d)),
       aside));
 }
 
@@ -528,28 +588,94 @@ function auditSection(d) {
 
 // ------------------------------------------------------------------ decision screen
 
-function choosePrimary(role, perms, a) {
-  const ok = (x) => perms[x] && perms[x].enabled;
+const ACTION_ORDER = ["approve", "hold", "escalate", "request_info", "reject"];
+
+function choosePrimary(role, perms, a, d, hasDraft) {
+  if (d.case.status === "Closed") return null;
+  if (role === "ta" && d.case.status === "Awaiting professor") return null; // waiting on someone else
+  const ok = (x) => perms[x] && perms[x].enabled && !(x === "approve" && !hasDraft);
   let want = a.suggested_action;
   if (role === "professor" && want === "escalate") want = "approve";
+  if (want === "approve" && !hasDraft) return null; // the reply must exist first
   if (ok(want)) return want;
   return ["request_info", "hold", "approve", "escalate", "reject"].find(ok) || null;
+}
+
+function actionReason(action, perms, hasDraft) {
+  const p = perms[action];
+  if (!p.enabled) return p.reason || "Not available";
+  if (action === "approve" && !hasDraft) return "Run the analysis first so there is a reply to review and approve.";
+  return "";
+}
+
+function analysisStatus(d) {
+  const wf = d.workflow, run = wf.latest, ai = d.ai;
+  const stale = wf.stale ? " The evidence changed after this ran; run it again before approving." : "";
+  if (!run) {
+    if (ai.mode === "mock") return { kind: "info", text: "Not run yet. Mock mode runs a deterministic template locally; no AI model is called." };
+    if (ai.mode === "misconfigured") return { kind: "warn", text: "Live AI is not usable: the server has a key but no model id. Use the rules-only draft." };
+    return { kind: "info", text: `Live AI is configured (${ai.model}) but has not been run for this case. Nothing is sent to the provider until you click Run analysis.` };
+  }
+  const t = run.total_tokens ? `, ${run.total_tokens} tokens` : "";
+  switch (run.outcome) {
+    case "accepted": return { kind: "ok", text: `Live AI succeeded: ${run.model}, ${run.latency_ms} ms${t}. The reply passed validation against the records.${stale}` };
+    case "mock": return { kind: "info", text: `Mock analysis only: a deterministic template ran locally and no AI model was called.${stale}` };
+    case "rules-only": return { kind: "info", text: `Rules-only draft: no model was called. This text is not AI output.${stale}` };
+    case "rejected": return { kind: "warn", text: `Live AI replied, but the answer failed validation and was rejected (${(run.validation.flags || []).length} problem(s)). The draft below is a rules-only template, not AI output.${stale}` };
+    case "error": return { kind: "warn", text: `Live AI call failed: ${run.error_message || "unknown error"} The draft below is a rules-only template, not AI output.${stale}` };
+    default: return { kind: "info", text: "An analysis is in progress." };
+  }
+}
+
+const STAGE_WORD = { done: "Done", skipped: "Skipped", failed: "Failed", pending: "Waiting", running: "Running" };
+
+function stagesList(run) {
+  return h("div", {},
+    h("p", { class: "meta" }, `Run #${run.id}, ${run.mode}, started ${fmt(run.started_at, true)}`,
+      run.provider && run.mode === "live" ? `, ${run.provider}` : "", run.model && run.mode === "live" ? ` / ${run.model}` : "",
+      run.attempts ? `, ${plural(run.attempts, "provider attempt")}` : ""),
+    h("ol", { class: "stages" }, run.stages.map((s) => h("li", { class: `stage st-${s.status}` },
+      h("span", { class: "stword" }, STAGE_WORD[s.status] || s.status), " ", h("strong", {}, s.label),
+      s.duration_ms != null && s.status !== "pending" && h("span", { class: "meta" }, ` ${s.duration_ms} ms`),
+      s.detail && h("div", { class: "meta" }, s.detail)))));
+}
+
+function analysisPanel(d, closed) {
+  const wf = d.workflow, ai = d.ai, st = analysisStatus(d), b = S.ai && S.ai.budget;
+  const live = ai.mode !== "mock";
+  const off = closed ? "This case is closed." : S.busy ? "An analysis is already running." : "";
+  const liveBlocked = live && (ai.mode === "misconfigured" ? "Live AI is not usable until a model id is configured on the server."
+    : b && b.exhausted ? "The lifetime AI budget is used up. Use the rules-only draft." : "");
+  const runLabel = wf.current_valid ? "Regenerate analysis" : "Run analysis";
+  const run = (rules) => (e) => runAnalysis({ force: !rules && wf.current_valid, rules_only: rules }, e.currentTarget);
+  return h("div", { class: "aipanel" },
+    h("div", { class: `notice ${st.kind === "ok" ? "success" : st.kind === "warn" ? "warn" : "info"}` }, st.text),
+    live && b && h("p", { class: "meta" }, `Lifetime AI calls: ${b.calls_used} of ${b.calls_limit} used. Each run uses one; a retry (${b.max_retries ? "enabled" : "disabled"}) would use another. Prompts are capped at ${b.max_prompt_bytes} bytes and replies at ${b.max_completion_tokens} tokens.`),
+    !closed && h("div", { class: "btnrow" },
+      h("button", { type: "button", class: "btn primary", id: "run-analysis", disabled: !!(off || liveBlocked), "aria-describedby": "run-why", onclick: run(false) }, runLabel),
+      h("button", { type: "button", class: "btn", id: "run-rules", disabled: !!off, onclick: run(true) }, "Create rules-only draft (no AI)")),
+    !closed && h("div", { id: "ai-err", role: "alert" }),
+    !closed && h("p", { class: "meta", id: "run-why" }, off || liveBlocked || (live ? "Uses one lifetime AI call. A valid analysis is reused until the evidence changes." : "Free: mock mode makes no model call.")),
+    wf.latest && stagesList(wf.latest),
+    wf.rejected && h("details", { class: "more" }, h("summary", {}, "Rejected AI output (kept for audit, never used)"),
+      (wf.rejected.flags || []).map(flagEl), wf.rejected.reply && h("blockquote", {}, wf.rejected.reply)),
+    h("p", { class: "meta" }, "Validation checks that citations exist and that numbers, times and promise wording match the records. It cannot prove every statement is correct, so a person must read the reply before approving."));
 }
 
 function decisionView() {
   const d = S.detail, a = d.analysis, dr = d.draft, role = S.role, perms = d.permissions[role];
   const closed = d.case.status === "Closed";
   const approved = !!(dr && dr.approved_at);
-  const primary = closed ? null : choosePrimary(role, perms, a);
+  const waitingProf = d.case.status === "Awaiting professor";
+  const primary = choosePrimary(role, perms, a, d, !!dr);
   const attemptItem = d.review_items.some((r) => r.kind === "attempt_basis" && r.status === "open");
-  const NOTE_REQ = ["hold", "reject", "escalate", "request_info"];
 
   const noteErr = h("p", { class: "fielderr", id: "note-err", role: "alert" });
   const countedErr = h("p", { class: "fielderr", id: "counted-err", role: "alert" });
   const formErr = h("div", { id: "form-err", role: "alert" });
   const note = h("textarea", { id: "note", class: "input", rows: 3, "aria-describedby": "note-err note-help",
     oninput: (e) => { S.ui.note = e.target.value; noteErr.textContent = ""; } }, S.ui.note);
-  const counted = h("select", { id: "counted", class: "input", disabled: role !== "professor" || closed, "aria-describedby": "counted-err counted-help",
+  const counted = h("select", { id: "counted", class: "input", disabled: role !== "professor", "aria-describedby": "counted-err counted-help",
     onchange: (e) => { S.ui.counted = e.target.value; countedErr.textContent = ""; } },
     h("option", { value: "" }, "Select an attempt"),
     a.attempts.filter((t) => t.state === "submitted").map((t) => h("option", { value: t.ref_id, selected: S.ui.counted === t.ref_id }, `${t.ref_id}: ${fmt(t.ts)}, ${mins(t)}`)));
@@ -557,12 +683,14 @@ function decisionView() {
   const flagBox = h("div", { id: "liveflags", "aria-live": "polite" });
   const dirtyNote = h("span", { class: "dirty", hidden: !isDirty() }, "Unsaved edits");
   let timer;
-  const body = h("textarea", { id: "body", class: "input draft", rows: 14, readonly: approved || closed,
+  const readonly = approved || closed;
+  const body = h("textarea", { id: "body", class: "input draft", rows: 14, readonly,
+    "aria-label": readonly ? "Approved reply (draft, not sent)" : "Reply to student (editable draft)",
     oninput: (e) => {
       S.ui.body = e.target.value; dirtyNote.hidden = !isDirty();
       clearTimeout(timer);
       timer = setTimeout(async () => {
-        if (S.ui.body == null || !body.isConnected) return; // state was reset (regenerate, save, navigation)
+        if (S.ui.body == null || !body.isConnected) return; // state was reset (analysis, save, navigation)
         try {
           const r = await api(`/api/cases/${d.case.id}/draft/check`, { method: "POST", body: { body: S.ui.body } });
           flagBox.replaceChildren(...r.flags.map(flagEl));
@@ -570,70 +698,80 @@ function decisionView() {
       }, 400);
     } }, S.ui.body ?? storedBody(dr));
 
-  const buttons = [];
-  const reasons = [];
   const mk = (action, isPrimary) => {
-    const p = perms[action];
+    const why = actionReason(action, perms, !!dr);
     const rid = `why-${action}`;
     const btn = h("button", { type: "button", class: `btn ${isPrimary ? "primary big" : action === "reject" ? "danger" : ""}`, "data-action": action,
-      disabled: !p.enabled, "aria-describedby": !p.enabled ? rid : null, onclick: (e) => submit(action, e.currentTarget) },
-      actionLabel(action, role));
+      disabled: !!why, "aria-describedby": why ? rid : null, onclick: (e) => submit(action, e.currentTarget) }, actionLabel(action, role));
     return h("div", { class: `act ${isPrimary ? "primary" : ""}` }, btn,
-      h("div", { class: "meta" }, `Moves to: ${p.next_status}`),
-      !p.enabled && h("div", { class: "why", id: rid }, p.reason || "Not available"));
+      h("div", { class: "meta" }, `Moves to: ${perms[action].next_status}`),
+      why && h("div", { class: "why", id: rid }, why));
   };
+  const actions = [];
   if (!closed) {
-    if (primary) buttons.push(mk(primary, true));
-    const others = ["approve", "hold", "escalate", "request_info", "reject"].filter((x) => x !== primary);
-    buttons.push(h("div", { class: "others" }, h("div", { class: "label" }, primary ? "Other actions" : "Actions"), others.map((x) => mk(x, false))));
+    if (waitingProf && role === "ta") {
+      actions.push(h("div", { class: "notice info" }, "This case is with the professor. A TA cannot approve or reject it. You can still add a hold or ask the student for information."));
+    } else if (!primary && !dr) {
+      actions.push(h("div", { class: "notice info" }, "Run the analysis in step 3 first. The recommended action appears once there is a reply to review."));
+    }
+    if (primary) actions.push(mk(primary, true));
+    const others = ACTION_ORDER.filter((x) => x !== primary);
+    actions.push(h("div", { class: "others" }, h("div", { class: "label" }, primary ? "Other actions" : "Actions"), others.map((x) => mk(x, false))));
   }
 
   const sc = d.score_control;
-  const scReason = sc.recorded ? sc.recorded.rationale : !a.professor_approved ? "Requires a professor approval first." :
-    !a.score_change ? "The approved basis gives the same score as the gradebook; nothing to record." : "";
+  const scReason = sc.recorded ? sc.recorded.rationale : !a.professor_approved ? "Requires a professor approval first."
+    : !a.score_change ? "The approved basis gives the same score as the gradebook; nothing to record." : "";
   const scBtn = h("button", { type: "button", class: "btn", disabled: !sc.enabled, "aria-describedby": "sc-why", onclick: (e) => recordScore(e.currentTarget) }, "Record score recommendation");
+
+  const steps = [];
+  steps.push({ title: "Review evidence and the recommended action", body: [
+    h("p", { class: "lead" }, factSummary(d)),
+    h("p", {}, h("strong", {}, routeLabel(d)), closed ? "." : [". Rules suggest: ", h("strong", {}, nextStep({ ...d.case, status: "New" })), "."]),
+    !closed && h("ul", { class: "plain" }, a.reasons.map((r) => h("li", {}, r))),
+    !closed && h("p", { class: "meta" }, "Uncertainty: " + (a.uncertainty.join(" ") || "none identified by the rules.")),
+    h("a", { href: `#/case/${d.case.id}/evidence` }, "Open the full evidence")] });
+  if (!closed) {
+    steps.push({ title: "Choose the attempt and add a note", body: [
+      attemptItem ? h("div", { class: "formrow" }, h("label", { for: "counted" }, "Attempt that counts as the submission"), counted,
+        h("p", { class: "meta", id: "counted-help" }, role === "professor" ? "Required to approve. This is the professor's call." : "Only the professor chooses which attempt counts. Switch the demo role to try it."), countedErr)
+        : h("p", { class: "meta" }, "No attempt choice is needed for this case."),
+      h("div", { class: "formrow" }, h("label", { for: "note" }, "Note for the decision log"), note,
+        h("p", { class: "meta", id: "note-help" }, "Required for every action except Approve. Stored with your name, role and time."), noteErr)] });
+  }
+  steps.push({ title: closed ? "Analysis and approved reply" : "Run the analysis and review the reply", body: [
+    analysisPanel(d, closed),
+    h("div", { class: "draftmeta" }, h("span", { class: "drafttag" }, "Draft only - not sent"), dirtyNote),
+    h("p", { class: "meta" }, provenance(d)),
+    dr ? [h("label", { for: "body", class: "label" }, approved ? "Approved reply (draft, not sent)" : "Reply to student (editable draft)"), body, flagBox]
+       : h("p", { class: "muted" }, "There is no reply draft yet."),
+    dr && !readonly && h("div", { class: "btnrow" }, h("button", { type: "button", class: "btn", onclick: (e) => saveDraft(e.currentTarget) }, "Save edits")),
+    dr && dr.flags.length > 0 && h("div", {}, h("h3", {}, "Guardrail flags"), dr.flags.map(flagEl)),
+    dr && claimBlock("Verified facts (each cites a record)", dr.verified, d), dr && claimBlock("Unverified (not confirmed by the records)", dr.unverified, d)] });
+  steps.push({ title: closed ? "Decision and score recommendation" : "Record the decision", body: [
+    !closed && h("p", { class: "meta" }, `Acting as ${role === "ta" ? "TA" : "Professor"} (demo role). Recording a decision changes this case's status and writes a log entry. Nothing is sent and nothing changes in Canvas.`),
+    !closed && formErr, actions,
+    h("div", { class: "scorebox" }, h("h3", {}, "Score recommendation"),
+      h("p", { class: "meta" }, "A professor approval authorises a recommendation only. Recording it saves a note inside GradeCase. Entering a grade in Canvas is a separate step staff do outside this tool; GradeCase never writes to Canvas."),
+      scBtn, h("p", { class: "meta", id: "sc-why" }, scReason),
+      a.score_change && !sc.recorded && h("p", {}, `Approved basis would recommend ${num(a.score_change.from)} → ${num(a.score_change.to)}.`))] });
 
   return h("div", { class: "page" },
     noticeEl(),
     caseHeader(d, "decision"),
-    closed && h("div", { class: "notice info" }, "This case is closed. The decision and the approved reply are shown below for the record."),
-    h("ol", { class: "flow" },
-      h("li", { class: "step" }, h("h2", {}, h("span", { class: "stepno" }, "1"), "Review evidence and the recommended action"),
-        h("p", { class: "lead" }, factSummary(d)),
-        h("p", {}, h("strong", {}, routeLabel(d)), ". Rules suggest: ", h("strong", {}, nextStep({ ...d.case, status: "New", suggested_action: a.suggested_action })), "."),
-        h("ul", { class: "plain" }, a.reasons.map((r) => h("li", {}, r))),
-        h("p", { class: "meta" }, "Uncertainty: " + (a.uncertainty.join(" ") || "none identified by the rules.")),
-        h("a", { href: `#/case/${d.case.id}/evidence` }, "Open the full evidence")),
-      h("li", { class: "step" }, h("h2", {}, h("span", { class: "stepno" }, "2"), "Choose the attempt and add a note"),
-        attemptItem ? h("div", { class: "formrow" }, h("label", { for: "counted" }, "Attempt that counts as the submission"), counted,
-          h("p", { class: "meta", id: "counted-help" }, role === "professor" ? "Required to approve. This is the professor's call." : "Only the professor chooses which attempt counts. Switch the demo role to try it."), countedErr)
-          : h("p", { class: "meta" }, "No attempt choice is needed for this case."),
-        h("div", { class: "formrow" }, h("label", { for: "note" }, "Note for the decision log"), note,
-          h("p", { class: "meta", id: "note-help" }, "Required for every action except Approve. Stored with your name, role and time."), noteErr)),
-      h("li", { class: "step" }, h("h2", {}, h("span", { class: "stepno" }, "3"), "Review the reply"),
-        h("div", { class: "draftmeta" }, h("span", { class: "drafttag" }, "Draft only - not sent"), dirtyNote),
-        h("p", { class: "meta" }, provenance(dr)),
-        h("label", { for: "body", class: "label" }, approved ? "Approved reply (draft, not sent)" : "Reply to student (editable draft)"), body, flagBox,
-        !approved && !closed && h("div", { class: "btnrow" },
-          h("button", { type: "button", class: "btn", onclick: (e) => saveDraft(e.currentTarget) }, "Save edits"),
-          h("button", { type: "button", class: "btn", onclick: (e) => regenerate(e.currentTarget) }, "Regenerate draft")),
-        dr && dr.flags.length > 0 && h("div", {}, h("h3", {}, "Guardrail flags"), dr.flags.map(flagEl)),
-        dr && claimBlock("Verified facts (each cites a record)", dr.verified, d), dr && claimBlock("Unverified (not confirmed by the records)", dr.unverified, d)),
-      h("li", { class: "step" }, h("h2", {}, h("span", { class: "stepno" }, "4"), "Record the decision"),
-        h("p", { class: "meta" }, `Acting as ${role === "ta" ? "TA" : "Professor"} (demo role). Recording a decision changes this case's status and writes a log entry. Nothing is sent and nothing changes in Canvas.`),
-        formErr, buttons,
-        h("div", { class: "scorebox" }, h("h3", {}, "Score recommendation"),
-          h("p", { class: "meta" }, "Records a recommendation inside GradeCase only. No Canvas change."),
-          scBtn, h("p", { class: "meta", id: "sc-why" }, scReason),
-          a.score_change && !sc.recorded && h("p", {}, `Approved basis would recommend ${num(a.score_change.from)} → ${num(a.score_change.to)}.`)))),
+    closed && h("div", { class: "notice info" }, "This case is closed. The decision and the approved reply are shown for the record; nothing here can be edited."),
+    h("ol", { class: "flow" }, steps.map((s, i) => h("li", { class: "step" },
+      h("h2", {}, h("span", { class: "stepno" }, String(i + 1)), s.title), s.body))),
     logSection(d));
 }
 
-function provenance(dr) {
+function provenance(d) {
+  const dr = d.draft;
   if (!dr) return "No draft yet.";
-  if (dr.ai_status === "unavailable") return "AI unavailable, rules-only view. This is a template built from the computed records.";
-  if (dr.ai_status === "mock") return "Template draft built from the computed records. Mock mode: no AI model was called.";
-  return "Drafted by the configured model, then checked by guardrails.";
+  if (dr.source === "llm") return `Drafted by the live model (${d.workflow.latest ? d.workflow.latest.model : "unknown"}) and validated against the records. It is still only a draft: a person must read it.`;
+  if (dr.source === "mock") return "Template draft built from the computed records. Mock mode: no AI model was called.";
+  if (dr.ai_status === "unavailable") return "Rules-only template. The AI reply was unavailable or rejected, so this text is NOT AI output.";
+  return "Rules-only template you requested. This text is NOT AI output.";
 }
 
 const flagEl = (f) => h("div", { class: "flag" }, f.message, f.code_value != null && h("strong", {}, ` Code value: ${f.code_value}`));
@@ -654,6 +792,41 @@ function logSection(d) {
       : h("p", { class: "muted" }, "No decisions recorded yet."));
 }
 
+async function runAnalysis(opts, btn) {
+  if (S.busy) return;
+  if (!confirmDiscard("replace the draft")) return;
+  const live = S.detail.ai.mode !== "mock" && !opts.rules_only;
+  if (live) {
+    const left = S.ai && S.ai.budget ? S.ai.budget.calls_remaining : "?";
+    if (!confirm(`This sends the case records to the AI provider and uses one of the ${left} remaining lifetime AI calls. Continue?`)) return;
+  }
+  S.busy = true;
+  const done = setBusy(btn, live ? "Calling AI..." : "Working...");
+  try {
+    const out = await api(`/api/cases/${S.detail.case.id}/analysis`, { method: "POST", body: opts });
+    S.detail = out;
+    S.ui.body = null;
+    const ai = out.ai;
+    S.notice = ({
+      succeeded: { kind: "success", title: "AI analysis succeeded.", text: "It passed validation against the records. Read the reply before deciding." },
+      mock: { kind: "info", title: "Mock analysis finished.", text: "No AI model was called." },
+      cached: { kind: "info", title: "Analysis reused.", text: ai.message },
+      rules_only: { kind: "info", title: "Rules-only draft created.", text: "No model was called; this text is not AI output." },
+      rejected: { kind: "error", title: "AI reply rejected.", text: `${ai.message} A rules-only draft was prepared instead.` },
+      error: { kind: "error", title: "AI call failed.", text: `${ai.message} A rules-only draft was prepared instead.` },
+    })[ai.status] || { kind: "info", title: "Done.", text: "" };
+  } catch (e) {
+    done();
+    showErr(e.message, "ai-err");
+    S.busy = false;
+    await refreshAi();
+    return;
+  }
+  S.busy = false;
+  await refreshAi();
+  render();
+}
+
 // ------------------------------------------------------------------ decision actions
 
 function setBusy(btn, text) {
@@ -664,8 +837,8 @@ function setBusy(btn, text) {
   return () => { all.forEach((b) => { b.disabled = b.dataset.was === "1"; }); btn.textContent = old; };
 }
 
-function showErr(text) {
-  const box = document.getElementById("form-err");
+function showErr(text, id = "form-err") {
+  const box = document.getElementById(id);
   if (box) box.replaceChildren(h("div", { class: "notice error" }, text));
   say(text);
 }
@@ -714,17 +887,6 @@ async function saveDraft(btn) {
   } catch (e) { done(); showErr(`Could not save the draft: ${e.message}`); }
 }
 
-async function regenerate(btn) {
-  if (!confirmDiscard("regenerate the draft")) return;
-  const done = setBusy(btn, "Regenerating...");
-  try {
-    S.detail = await api(`/api/cases/${S.detail.case.id}/draft`, { method: "POST" });
-    S.ui.body = null;
-    S.notice = { kind: "info", title: "Draft regenerated.", text: "Review it before recording a decision." };
-    render();
-  } catch (e) { done(); showErr(`Could not regenerate the draft: ${e.message}`); }
-}
-
 async function recordScore(btn) {
   const done = setBusy(btn, "Recording...");
   try {
@@ -732,6 +894,212 @@ async function recordScore(btn) {
     S.notice = { kind: "success", title: "Score recommendation recorded.", text: "It exists only inside GradeCase. No Canvas change was made." };
     render();
   } catch (e) { done(); showErr(`Could not record the recommendation: ${e.message}`); }
+}
+
+// ------------------------------------------------------------------ intake (synthetic only)
+
+const OFFSETS = [["-07:00", "UTC-7 (Mountain standard)"], ["+00:00", "UTC"]];
+
+function fieldRow(label, control, help, fieldPath) {
+  const id = `f-${fieldPath.replace(/\./g, "-")}`;
+  control.id = id;
+  control.setAttribute("data-field", fieldPath);
+  return h("div", { class: "formrow" }, h("label", { for: id }, label), control, help && h("p", { class: "meta" }, help),
+    h("p", { class: "fielderr", "data-err-for": fieldPath, role: "alert" }));
+}
+const textIn = (path, ph, extra = {}) => h("input", { type: "text", class: "input", placeholder: ph || "", autocomplete: "off", ...extra });
+const numIn = (ph, extra = {}) => h("input", { type: "number", class: "input", step: "any", min: "0", placeholder: ph || "", ...extra });
+
+function rowControls(container, makeRow, max, label) {
+  const add = h("button", { type: "button", class: "btn", onclick: () => { if (container.children.length < max) container.append(makeRow()); } }, label);
+  return add;
+}
+
+async function intakeView() {
+  const cases = await api("/api/cases");
+  let examples = [];
+  try { examples = await api("/api/intake/examples"); } catch (e) { /* the form works without examples */ }
+
+  const summary = h("div", { id: "intake-summary", role: "alert" });
+  const mode = h("select", { class: "input", id: "f-mode", onchange: () => toggleMode() },
+    h("option", { value: "new" }, "Create a new case"), h("option", { value: "existing" }, "Add a message to an existing case"));
+  const existing = h("select", { class: "input" }, cases.filter((c) => !c.merged_into).map((c) => h("option", { value: c.id, "data-student": c.student_id, "data-assignment": c.assignment }, `${c.id}: ${caseTitle(c)} (${c.assignment}, ${c.student_id})`)));
+  const offset = h("select", { class: "input", id: "f-offset" }, OFFSETS.map(([v, t]) => h("option", { value: v }, t)));
+  const channel = h("select", { class: "input" }, ["canvas_inbox", "email", "submission_comment"].map((c) => h("option", { value: c }, channelName(c))));
+  const direction = h("select", { class: "input" }, h("option", { value: "inbound" }, "From the student"), h("option", { value: "outbound" }, "Reply from staff"));
+  const staff = h("select", { class: "input" }, ["TA Rivera", "TA Chen", "Prof. Demo"].map((n) => h("option", { value: n }, n)));
+  const student = textIn("student", "S-4B21");
+  const assignment = textIn("assignment", "HW6");
+  const msgTs = h("input", { type: "datetime-local", class: "input" });
+  const msgText = h("textarea", { class: "input", rows: 4, maxlength: 2000, placeholder: "I submitted on time but it shows late." });
+  const ack = h("input", { type: "checkbox", id: "f-ack", "data-field": "synthetic_ack" });
+  const owner = h("select", { class: "input" }, h("option", { value: "" }, "Unassigned"), ["TA Rivera", "TA Chen"].map((n) => h("option", { value: n }, n)));
+
+  const ctxName = textIn("c", "Homework 6");
+  const ctxDeadline = h("input", { type: "datetime-local", class: "input" });
+  const ctxPoints = numIn("10", { min: "1" });
+  const ctxPolicy = h("select", { class: "input" },
+    h("option", { value: "POL-LATE-v1" }, "POL-LATE-v1 (on file)"), h("option", { value: "POL-LATE-v9" }, "POL-LATE-v9 (not on file: the case will be put on hold)"));
+  const attempts = h("div", { class: "rows" });
+  const rubric = h("div", { class: "rows" });
+  const scEntered = numIn("7"), scPosted = numIn("7"), scDed = numIn("0"), scGraded = h("input", { type: "checkbox", id: "f-graded" });
+
+  const attemptRow = (v = {}) => {
+    const i = attempts.children.length;
+    const row = h("div", { class: "rowline", "data-field": `context.attempts.${i}` },
+      h("label", { class: "field" }, h("span", { class: "label" }, `Attempt ${i + 1} time`), h("input", { type: "datetime-local", class: "input", "data-k": "ts", "data-field": `context.attempts.${i}.ts`, value: v.ts || "" })),
+      h("label", { class: "field" }, h("span", { class: "label" }, "State"), h("select", { class: "input", "data-k": "state", "data-field": `context.attempts.${i}.state` },
+        [["submitted", "Submitted"], ["unreadable", "File unreadable"], ["empty_file", "Empty file"], ["alternate_evidence", "Alternate evidence (screenshot/link)"]].map(([k, t]) => h("option", { value: k, selected: v.state === k }, t)))),
+      h("label", { class: "field" }, h("span", { class: "label" }, "File name (optional)"), h("input", { type: "text", class: "input", "data-k": "file", "data-field": `context.attempts.${i}.file`, value: v.file || "" })),
+      h("button", { type: "button", class: "btn quiet", onclick: (e) => { e.currentTarget.parentElement.remove(); } }, "Remove"),
+      h("p", { class: "fielderr", "data-err-for": `context.attempts.${i}`, role: "alert" }));
+    return row;
+  };
+  const rubricRow = (v = {}) => {
+    const i = rubric.children.length;
+    return h("div", { class: "rowline", "data-field": `context.rubric.${i}` },
+      h("label", { class: "field" }, h("span", { class: "label" }, "Row label"), h("input", { type: "text", class: "input", "data-k": "label", "data-field": `context.rubric.${i}.label`, value: v.label || "" })),
+      h("label", { class: "field" }, h("span", { class: "label" }, "Max points"), h("input", { type: "number", step: "any", min: "0", class: "input", "data-k": "max", "data-field": `context.rubric.${i}.max`, value: v.max ?? "" })),
+      h("label", { class: "field" }, h("span", { class: "label" }, "Awarded"), h("input", { type: "number", step: "any", min: "0", class: "input", "data-k": "awarded", "data-field": `context.rubric.${i}.awarded`, value: v.awarded ?? "" })),
+      h("button", { type: "button", class: "btn quiet", onclick: (e) => { e.currentTarget.parentElement.remove(); } }, "Remove"),
+      h("p", { class: "fielderr", "data-err-for": `context.rubric.${i}`, role: "alert" }));
+  };
+
+  const ctxBox = h("fieldset", { class: "ctx" }, h("legend", {}, "Supporting records for the new case (all synthetic)"),
+    h("p", { class: "meta" }, "These become the case's evidence. Anything you leave out is simply missing, and the rule engine will say so. Only POL-LATE-v1 exists as a policy in this demo."),
+    fieldRow("Assignment name", ctxName, null, "context.assignment_name"),
+    fieldRow("Deadline", ctxDeadline, "Uses the time zone chosen above.", "context.deadline"),
+    fieldRow("Maximum points", ctxPoints, null, "context.max_points"),
+    fieldRow("Late policy reference", ctxPolicy, null, "context.policy_ref"),
+    h("h3", {}, "Submission attempts"), attempts, rowControls(attempts, attemptRow, 6, "Add attempt"),
+    h("p", { class: "meta" }, "No attempts means the case records no submission."),
+    h("h3", {}, "Rubric rows"), rubric, rowControls(rubric, rubricRow, 12, "Add rubric row"),
+    h("h3", {}, "Gradebook"),
+    h("div", { class: "rowline" }, h("label", { class: "field" }, h("span", { class: "label" }, "Entered score"), scEntered),
+      h("label", { class: "field" }, h("span", { class: "label" }, "Posted score"), scPosted),
+      h("label", { class: "field" }, h("span", { class: "label" }, "Late deduction recorded"), scDed),
+      h("label", { class: "check" }, scGraded, " Graded")));
+
+  function toggleMode() {
+    const isNew = mode.value === "new";
+    ctxBox.hidden = !isNew; existingRow.hidden = isNew; studentRow.hidden = !isNew ? true : false; assignRow.hidden = !isNew;
+    ownerRow.hidden = !isNew; dirRow.hidden = isNew; staffRow.hidden = isNew || direction.value !== "outbound";
+  }
+  direction.addEventListener("change", () => { staffRow.hidden = direction.value !== "outbound"; });
+
+  const existingRow = fieldRow("Existing case", existing, "The student and assignment of that case are used.", "case_id");
+  const studentRow = fieldRow("Student pseudo-ID", student, "Format S- plus 4 to 8 hex characters. Never a real name or number.", "student");
+  const assignRow = fieldRow("Assignment ID", assignment, "Letters and digits, e.g. HW6.", "assignment");
+  const ownerRow = fieldRow("Owner (optional)", owner, null, "owner");
+  const dirRow = fieldRow("Message type", direction, null, "message.direction");
+  const staffRow = fieldRow("Staff author", staff, null, "message.author");
+
+  function fill(req) {
+    mode.value = "new"; toggleMode();
+    student.value = req.student; assignment.value = req.assignment;
+    channel.value = req.message.channel; msgText.value = req.message.text;
+    const local = (ts) => ts.slice(0, 16);
+    msgTs.value = local(req.message.ts);
+    offset.value = OFFSETS.some(([v]) => req.message.ts.endsWith(v)) ? req.message.ts.slice(-6) : "-07:00";
+    const c = req.context; if (!c) return;
+    ctxName.value = c.assignment_name; ctxDeadline.value = local(c.deadline); ctxPoints.value = c.max_points;
+    ctxPolicy.value = c.policy_ref;
+    attempts.replaceChildren(...c.attempts.map((a) => attemptRow({ ...a, ts: local(a.ts) })));
+    rubric.replaceChildren(...c.rubric.map((r) => rubricRow(r)));
+    const sc = c.score || {};
+    scEntered.value = sc.entered ?? ""; scPosted.value = sc.posted ?? ""; scDed.value = sc.late_deduction_applied ?? 0; scGraded.checked = !!sc.graded;
+  }
+
+  const iso = (local) => (local ? `${local.length === 16 ? local + ":00" : local}${offset.value}` : "");
+  const numOrNull = (el) => (el.value === "" ? null : Number(el.value));
+
+  function build() {
+    const isNew = mode.value === "new";
+    const sel = existing.selectedOptions[0];
+    const message = { channel: channel.value, ts: iso(msgTs.value), text: msgText.value };
+    const req = { synthetic_ack: ack.checked, message };
+    if (isNew) {
+      req.student = student.value.trim(); req.assignment = assignment.value.trim();
+      if (owner.value) req.owner = owner.value;
+      req.context = {
+        assignment_name: ctxName.value.trim(), deadline: iso(ctxDeadline.value), max_points: numOrNull(ctxPoints),
+        policy_ref: ctxPolicy.value,
+        attempts: [...attempts.children].map((r) => {
+          const o = { ts: iso(r.querySelector('[data-k="ts"]').value), state: r.querySelector('[data-k="state"]').value };
+          const f = r.querySelector('[data-k="file"]').value.trim(); if (f) o.file = f; return o;
+        }),
+        rubric: [...rubric.children].map((r) => ({ label: r.querySelector('[data-k="label"]').value.trim(),
+          max: Number(r.querySelector('[data-k="max"]').value), awarded: Number(r.querySelector('[data-k="awarded"]').value) })),
+        score: { entered: numOrNull(scEntered), posted: numOrNull(scPosted), graded: scGraded.checked, late_deduction_applied: numOrNull(scDed) ?? 0 },
+      };
+    } else {
+      req.student = sel.dataset.student; req.assignment = sel.dataset.assignment; req.case_id = existing.value;
+      message.direction = direction.value;
+      if (direction.value === "outbound") message.author = staff.value;
+    }
+    return req;
+  }
+
+  function showErrors(errors) {
+    document.querySelectorAll(".fielderr[data-err-for]").forEach((p) => { p.textContent = ""; });
+    const unmatched = [];
+    let first = null;
+    for (const e of errors) {
+      const keys = [...document.querySelectorAll("[data-err-for]")].map((p) => p.dataset.errFor)
+        .filter((k) => e.field === k || e.field.startsWith(k + ".")).sort((a, b) => b.length - a.length);
+      const p = keys.length ? document.querySelector(`[data-err-for="${CSS.escape(keys[0])}"]`) : null;
+      if (p) { p.textContent = e.message; first = first || document.querySelector(`[data-field="${CSS.escape(keys[0])}"]`); }
+      else unmatched.push(e);
+    }
+    summary.replaceChildren(h("div", { class: "notice error" }, h("div", {},
+      h("strong", {}, "Some fields need attention."),
+      h("ul", { class: "plain" }, errors.map((e) => h("li", {}, e.field ? `${e.field}: ${e.message}` : e.message))))));
+    const target = first || summary; if (target.focus) target.focus();
+    if (target.scrollIntoView) target.scrollIntoView({ block: "center" });
+  }
+
+  const submitBtn = h("button", { type: "submit", class: "btn primary big" }, "Create case");
+  const form = h("form", { class: "intake", novalidate: true, onsubmit: async (e) => {
+    e.preventDefault();
+    if (S.busy) return;
+    S.busy = true; submitBtn.disabled = true; submitBtn.textContent = "Creating...";
+    summary.replaceChildren();
+    try {
+      const out = await fetch("/api/intake", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(build()) });
+      const data = await out.json().catch(() => ({}));
+      if (!out.ok) {
+        if (data.errors && data.errors.length) showErrors(data.errors);
+        else summary.replaceChildren(h("div", { class: "notice error" }, data.detail || `Request failed (HTTP ${out.status})`));
+        return;
+      }
+      S.notice = { kind: "success", title: mode.value === "new" ? "Case created." : "Message added.", text: `${data.case_id} now holds ${data.message_id}. The rule engine has already checked the records.` };
+      S.detail = null;
+      location.hash = `#/case/${data.case_id}/evidence`;
+    } catch (err) {
+      summary.replaceChildren(h("div", { class: "notice error" }, `Could not reach the server: ${err.message}`));
+    } finally { S.busy = false; submitBtn.disabled = false; submitBtn.textContent = "Create case"; }
+  } },
+    summary,
+    h("div", { class: "notice warn" }, h("strong", {}, "Synthetic data only. "), "Do not type real student names, emails, phone numbers, links or ID numbers: they are rejected. Nothing is sent to Canvas or email, and the demo cases A to D use built-in records, not this form."),
+    examples.length > 0 && h("div", { class: "btnrow examples" }, h("span", { class: "meta" }, "Load an example:"),
+      examples.map((x) => h("button", { type: "button", class: "btn", onclick: () => fill(x.request) }, x.title.split(":")[0]))),
+    fieldRow("What are you adding?", mode, null, "mode"),
+    existingRow, studentRow, assignRow, ownerRow,
+    fieldRow("Channel", channel, null, "message.channel"),
+    dirRow, staffRow,
+    fieldRow("Message time", msgTs, "Uses the time zone below.", "message.ts"),
+    fieldRow("Time zone", offset, null, "tz"),
+    fieldRow("Message text", msgText, "Up to 2000 characters.", "message.text"),
+    ctxBox,
+    h("div", { class: "formrow" }, h("label", { class: "check" }, ack, " I confirm this is synthetic data and contains no real student information."),
+      h("p", { class: "fielderr", "data-err-for": "synthetic_ack", role: "alert" })),
+    h("div", { class: "btnrow" }, submitBtn, h("a", { class: "btn", href: "#/queue" }, "Cancel")));
+
+  const view = h("div", { class: "page" }, h("h1", {}, "New synthetic case"),
+    h("p", { class: "lede" }, "Enter a message and the records behind it. The rules check them straight away, and the usual duplicate, evidence and decision steps follow."), form);
+  existing.addEventListener("change", () => {});
+  toggleMode();
+  return view;
 }
 
 // ------------------------------------------------------------------ boot
@@ -750,18 +1118,22 @@ async function boot() {
     S.cfg = await api("/api/config");
     $("name").textContent = S.cfg.product_name;
     $("banner").textContent = S.cfg.banner;
-    $("mode").textContent = S.cfg.llm_mode === "mock"
+    $("mode").textContent = S.cfg.ai_mode === "mock"
       ? "Mock mode: reply drafts are templates built from computed records. No AI model is called."
-      : `Reply drafts use Vultr Serverless Inference${S.cfg.model ? " (" + S.cfg.model + ")" : ""}; all numbers are computed by rules.`;
-  } catch (e) { S.cfg = { llm_mode: "mock" }; }
+      : S.cfg.ai_mode === "misconfigured"
+        ? "AI is not usable: a key is set but no model id. Drafts fall back to rules-only templates."
+        : "Live AI is configured, but only runs when someone clicks Run analysis. All numbers come from rules.";
+  } catch (e) { S.cfg = { ai_mode: "mock" }; }
+  await refreshAi();
   $("role-ta").addEventListener("click", () => setRole("ta"));
   $("role-professor").addEventListener("click", () => setRole("professor"));
   $("reset").addEventListener("click", async () => {
-    if (!confirm("Reset all demo data? This deletes recorded decisions, drafts and merges and restores the synthetic cases.")) return;
+    if (!confirm("Reset the demo cases? This deletes recorded decisions, drafts, merges and cases you added, and restores the synthetic cases. The AI spending counters and the attempt log are NOT reset.")) return;
     try {
       await api("/api/demo/reset?confirm=true", { method: "POST" });
       S.detail = null; S.ui = { caseId: null, note: "", counted: "", body: null };
-      S.notice = { kind: "info", title: "Demo data reset.", text: "The synthetic cases were restored." };
+      S.notice = { kind: "info", title: "Demo data reset.", text: "The synthetic cases were restored. AI spending counters were not reset." };
+      await refreshAi();
       if (location.hash !== "#/queue") { S.hash = "#/queue"; location.hash = "#/queue"; } else render();
     } catch (e) { S.notice = { kind: "error", title: "Reset failed.", text: e.message }; render(); }
   });
@@ -769,7 +1141,8 @@ async function boot() {
     if (S.ignoreHash) { S.ignoreHash = false; return; }
     if (!confirmDiscard("leave this page")) { S.ignoreHash = true; location.hash = S.hash; return; }
     S.hash = location.hash || "#/queue";
-    S.notice = null;
+    if (!S.keepNotice) S.notice = null;
+    S.keepNotice = false;
     render();
   });
   window.addEventListener("beforeunload", (e) => { if (isDirty()) { e.preventDefault(); e.returnValue = ""; } });

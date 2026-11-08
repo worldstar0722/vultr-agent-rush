@@ -410,6 +410,33 @@ def analyze(evidence: list[Row]) -> dict[str, Any]:
             }
         )
 
+    # ---- reconciliation: one honest sentence about whether the records agree. The UI and the
+    # reasons below reuse it, so nothing can say "consistent" while a difference remains.
+    if score_change:
+        reconciliation = {
+            "state": "recommendation_pending",
+            "text": (
+                f"A professor approved the basis ({score_change['basis_attempt']}). The gradebook "
+                f"still shows {_g(score_change['from'])}; the approved basis gives "
+                f"{_g(score_change['to'])}. Recording a recommendation does not change Canvas."
+            ),
+        }
+    elif differences:
+        reconciliation = {
+            "state": "differs",
+            "text": "The gradebook differs from the computed score: " + differences[0]["text"],
+        }
+    elif professor_approved:
+        reconciliation = {
+            "state": "approved_consistent",
+            "text": "A professor approved this case and the gradebook already matches the approved basis.",
+        }
+    else:
+        reconciliation = {
+            "state": "consistent",
+            "text": "Records are consistent: no late flag or score difference was found.",
+        }
+
     # ---- suggested action (a suggestion for the human, never executed)
     if any(b["code"] == "insufficient_evidence" for b in blockers):
         suggested, route = "request_info", "student_info"
@@ -422,7 +449,7 @@ def analyze(evidence: list[Row]) -> dict[str, Any]:
         reasons = [g["text"] for g in gates]
     else:
         suggested, route = "approve", "ta"
-        reasons = ["Records are consistent; no professor decision is required."]
+        reasons = [reconciliation["text"]]
     if any(b["code"] == "policy_missing" for b in blockers) and suggested == "request_info":
         reasons.append("The professor must also confirm which policy applies.")
     uncertainty = []
@@ -479,6 +506,7 @@ def analyze(evidence: list[Row]) -> dict[str, Any]:
             "evidence_ids": rubric_ids + score_ev_ids,
         },
         "score_change": score_change,
+        "reconciliation": reconciliation,
         "professor_approved": professor_approved,
         "approval_ids": [a["ref_id"] for a in approvals],
         "warnings": warnings,

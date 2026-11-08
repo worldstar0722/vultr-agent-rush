@@ -262,19 +262,39 @@ def validate_draft(raw: dict[str, Any], analysis: dict[str, Any]) -> dict[str, A
         unverified.append(c)
         flags += c["flags"]
 
-    reply, f_reply = strip_invalid_citations(str(raw.get("reply", "")), valid)
-    reply_flags = [
-        {**f, "where": "reply"}
-        for f in f_reply + number_conflicts(reply, analysis) + commitment_flags(reply)
+    def clean_text(value: Any, where: str) -> str:
+        text, fl = strip_invalid_citations(str(value or ""), valid)
+        flags.extend(
+            {**f, "where": where}
+            for f in fl + number_conflicts(text, analysis) + commitment_flags(text)
+        )
+        return text
+
+    reply = clean_text(raw.get("reply"), "reply")
+    summary = clean_text(raw.get("summary"), "summary")
+    rationale = clean_text(raw.get("rationale"), "rationale")
+    uncertainty = clean_text(raw.get("uncertainty"), "uncertainty")
+    raw_unresolved = raw.get("unresolved")
+    unresolved = [
+        clean_text(u, f"unresolved[{i}]")
+        for i, u in enumerate(raw_unresolved if isinstance(raw_unresolved, list) else [])
     ]
-    flags += reply_flags
     return {
         "classification": str(raw.get("classification", "")),
-        "summary": str(raw.get("summary", "")),
+        "summary": summary,
         "verified": verified,
         "unverified": unverified,
+        "unresolved": unresolved,
         "reply": reply,
-        "rationale": str(raw.get("rationale", "")),
-        "uncertainty": str(raw.get("uncertainty", "")),
+        "rationale": rationale,
+        "uncertainty": uncertainty,
         "flags": flags,
     }
+
+
+# A live model reply with any of these is rejected outright (fail closed), not "repaired".
+BLOCKING_KINDS = {"invalid_citation", "no_citation", "needs_verification", "commitment"}
+
+
+def blocking_flags(flags: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [f for f in flags if f.get("kind") in BLOCKING_KINDS]

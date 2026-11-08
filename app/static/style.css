@@ -280,3 +280,29 @@ blockquote { border-left: 3px solid var(--line-strong); background: var(--ivory)
   .qrow[aria-current="true"] td:first-child { box-shadow: none; }
   .caselink { display: inline-block; padding: 4px 0; }
 }
+
+/* ---------- AI analysis, workflow stages, intake ---------- */
+.pagehead { display: flex; justify-content: space-between; align-items: center; gap: 16px; flex-wrap: wrap; margin-bottom: 4px; }
+.ai-sub.warn { color: var(--amber); font-weight: 600; }
+.aipanel { margin-bottom: 16px; }
+.notice.info { border-color: var(--line-strong); background: var(--paper); }
+.stages { list-style: none; padding: 0; margin: 8px 0 0; border-left: 2px solid var(--line-strong); }
+.stage { padding: 4px 0 8px 16px; position: relative; }
+.stage::before { content: ""; position: absolute; left: -6px; top: 10px; width: 10px; height: 10px; border-radius: 5px; background: var(--paper); border: 2px solid var(--line-strong); }
+.stage.st-done::before { border-color: var(--primary); background: var(--primary); }
+.stage.st-failed::before { border-color: var(--amber); background: var(--amber-line); }
+.stage.st-pending::before, .stage.st-skipped::before { border-style: dashed; }
+.stword { display: inline-block; min-width: 64px; font-size: 12px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: 0.03em; }
+.st-done .stword { color: var(--primary); }
+.st-failed .stword { color: var(--amber); }
+form.intake { max-width: 760px; }
+form.intake .formrow { max-width: none; }
+fieldset.ctx { border: 1px solid var(--line-strong); border-radius: 6px; padding: 16px 24px 24px; margin: 24px 0; background: var(--paper); }
+fieldset.ctx legend { font-weight: 600; padding: 0 8px; }
+.rows { display: flex; flex-direction: column; gap: 12px; margin-bottom: 8px; }
+.rowline { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; align-items: end; padding: 12px; border: 1px solid var(--line); border-radius: 6px; background: var(--ivory); }
+.rowline .fielderr { grid-column: 1 / -1; }
+.check { display: flex; align-items: center; gap: 8px; font-weight: 500; }
+.check input { width: 20px; height: 20px; }
+.examples { align-items: center; margin-bottom: 16px; }
+@media (max-width: 800px) { .rowline { grid-template-columns: minmax(0, 1fr); } .check input { width: 24px; height: 24px; } }

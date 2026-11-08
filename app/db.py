@@ -91,6 +91,50 @@ CREATE TABLE IF NOT EXISTS review_items (
   created_at TEXT NOT NULL,
   UNIQUE(case_id, kind)
 );
+CREATE TABLE IF NOT EXISTS analysis_runs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  case_id TEXT NOT NULL REFERENCES cases(id),
+  fingerprint TEXT NOT NULL,           -- hash of the evidence this run saw
+  mode TEXT NOT NULL,                  -- live|mock|rules-only
+  outcome TEXT NOT NULL,               -- running|accepted|mock|rejected|error|rules-only
+  provider TEXT NOT NULL DEFAULT '',
+  model TEXT NOT NULL DEFAULT '',      -- model reported by the provider (or configured one)
+  started_at TEXT NOT NULL,
+  finished_at TEXT,
+  latency_ms INTEGER,
+  attempts INTEGER NOT NULL DEFAULT 0,
+  prompt_tokens INTEGER,
+  completion_tokens INTEGER,
+  total_tokens INTEGER,
+  error_kind TEXT NOT NULL DEFAULT '',
+  error_message TEXT NOT NULL DEFAULT '',  -- redacted, fixed wording, never provider output
+  validation TEXT NOT NULL DEFAULT '{}',   -- {passed, flags, schema_ok}
+  ai_output TEXT NOT NULL DEFAULT '{}',    -- AI-generated text only (kept even when rejected)
+  stages TEXT NOT NULL DEFAULT '[]',       -- real operations with real timestamps
+  client TEXT NOT NULL DEFAULT ''
+);
+-- Lifetime spending counters and the per-attempt provenance log. Neither is cleared by
+-- "Reset demo data": that button must never refill the budget or erase what was spent.
+CREATE TABLE IF NOT EXISTS ai_usage_total (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  calls INTEGER NOT NULL DEFAULT 0,    -- provider HTTP attempts reserved, ever (never refunded)
+  tokens INTEGER NOT NULL DEFAULT 0    -- tokens reported by the provider (information only)
+);
+CREATE TABLE IF NOT EXISTS ai_attempt_log (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts TEXT NOT NULL,
+  case_id TEXT NOT NULL,               -- plain text, no foreign key: survives a demo reset
+  provider TEXT NOT NULL,
+  model TEXT NOT NULL,
+  prompt_bytes INTEGER NOT NULL,
+  outcome TEXT NOT NULL DEFAULT 'reserved',  -- reserved (result unknown) | ok | <error kind>
+  total_tokens INTEGER
+);
+CREATE TABLE IF NOT EXISTS ai_client_calls (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  client TEXT NOT NULL,                -- salted hash, never a raw address
+  ts REAL NOT NULL
+);
 CREATE TABLE IF NOT EXISTS duplicates (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   case_a TEXT NOT NULL,
@@ -102,7 +146,10 @@ CREATE TABLE IF NOT EXISTS duplicates (
 );
 """
 
+# Cleared by "Reset demo data". The AI budget tables are deliberately NOT here: a public reset
+# must never refill the spending budget.
 TABLES = (
+    "analysis_runs",
     "duplicates",
     "review_items",
     "response_drafts",
@@ -134,12 +181,22 @@ def init_db(path: str) -> None:
     with connect(path) as conn:
         conn.execute("PRAGMA journal_mode=WAL")
         conn.executescript(SCHEMA)
+        _migrate(conn)
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Upgrade databases created by older versions in place (the deployed Docker volume)."""
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(response_drafts)")}
+    if "run_id" not in cols:
+        conn.execute("ALTER TABLE response_drafts ADD COLUMN run_id INTEGER")
 
 
 def clear_all(conn: sqlite3.Connection) -> None:
     for table in TABLES:
         conn.execute(f"DELETE FROM {table}")  # noqa: S608 - fixed table names
-    conn.execute("DELETE FROM sqlite_sequence")
+    conn.execute(
+        "DELETE FROM sqlite_sequence WHERE name NOT IN ('ai_client_calls', 'ai_attempt_log')"
+    )
 
 
 def j(value: Any) -> str:

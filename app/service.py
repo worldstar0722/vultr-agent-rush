@@ -8,10 +8,13 @@ from datetime import UTC, datetime
 from typing import Any
 
 from app import fixtures, guardrails
+from app.analysis import Analyzer
 from app.config import Settings
 from app.db import clear_all, connect, init_db, j, row_dict
-from app.drafting import build_template_draft, finalize_reply
+from app.drafting import finalize_reply
 from app.engine import analyze, classify_issue
+from app.errors import DeskError
+from app.intake import IntakeRequest, to_context
 from app.llm import LLM
 
 STATUSES = ["New", "TA review", "Awaiting professor", "Awaiting student info", "Closed"]
@@ -28,13 +31,6 @@ NEXT_STATUS = {
 NOTE_REQUIRED = {"hold", "reject", "escalate", "request_info"}
 
 
-class DeskError(Exception):
-    def __init__(self, status: int, message: str) -> None:
-        super().__init__(message)
-        self.status = status
-        self.message = message
-
-
 def now() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds")
 
@@ -44,6 +40,7 @@ class Desk:
         self.settings = settings
         self.llm = llm
         init_db(settings.db_path)
+        self.analyzer = Analyzer(self)
         with connect(settings.db_path) as conn:
             empty = conn.execute("SELECT COUNT(*) FROM cases").fetchone()[0] == 0
         if empty:
@@ -59,24 +56,20 @@ class Desk:
             if reset:
                 clear_all(conn)
             for msg in fixtures.MESSAGES:
-                self._import(conn, msg)
+                ctx = next(
+                    (
+                        c
+                        for c in fixtures.CONTEXTS
+                        if c["student"] == msg["student"] and c["assignment"] == msg["assignment"]
+                    ),
+                    None,
+                )
+                self._import(conn, msg, ctx)
             self._detect_duplicates(conn)
 
-    def import_message(self, msg: dict[str, Any]) -> str:
-        with self._conn() as conn:
-            case_id = self._import(conn, msg)
-            self._detect_duplicates(conn)
-            return case_id
-
-    def _import(self, conn: sqlite3.Connection, m: dict[str, Any]) -> str:
-        ctx = next(
-            (
-                c
-                for c in fixtures.CONTEXTS
-                if c["student"] == m["student"] and c["assignment"] == m["assignment"]
-            ),
-            None,
-        )
+    def _import(
+        self, conn: sqlite3.Connection, m: dict[str, Any], ctx: dict[str, Any] | None = None
+    ) -> str:
         case_id = m.get("case_id")
         if not case_id:
             n = conn.execute("SELECT COUNT(*) FROM cases").fetchone()[0]
@@ -125,6 +118,60 @@ class Desk:
         self._sync_review_items(conn, case_id)
         return case_id
 
+    def intake(self, req: IntakeRequest) -> dict[str, Any]:
+        """Create a case (or add a message to one) from validated synthetic input."""
+        m = req.message
+        with self._conn() as conn:
+            if req.case_id:
+                case = self._case(conn, req.case_id)
+                if case["merged_into"]:
+                    raise DeskError(409, f"{req.case_id} was merged into {case['merged_into']}")
+                if case["student_id"] != req.student or case["assignment"] != req.assignment:
+                    raise DeskError(409, "The student and assignment must match the existing case")
+                case_id, ctx = req.case_id, None
+                num = case_id.split("-", 1)[1]
+            else:
+                if (
+                    conn.execute("SELECT COUNT(*) FROM cases").fetchone()[0]
+                    >= self.settings.max_cases
+                ):
+                    raise DeskError(
+                        409,
+                        "The demo case limit was reached. Reset the demo data first.",
+                        "case_limit",
+                    )
+                nums = [
+                    int(r["id"].split("-", 1)[1])
+                    for r in conn.execute("SELECT id FROM cases WHERE id GLOB 'CASE-[0-9]*'")
+                    if r["id"].split("-", 1)[1].isdigit()
+                ]
+                num = f"{max(nums, default=100) + 1:03d}"
+                case_id = f"CASE-{num}"
+                ctx = to_context(req, num)
+            k = (
+                1
+                + conn.execute(
+                    "SELECT COUNT(*) FROM evidence WHERE case_id=? AND source_type='message'",
+                    (case_id,),
+                ).fetchone()[0]
+            )
+            msg = {
+                "id": f"MSG-{num}-{k}",
+                "case_id": case_id,
+                "channel": m.channel,
+                "direction": m.direction,
+                "author": m.author or req.student,
+                "role": "student" if m.direction == "inbound" else "ta",
+                "student": req.student,
+                "assignment": req.assignment,
+                "ts": m.ts,
+                "owner": req.owner,
+                "text": m.text,
+            }
+            self._import(conn, msg, ctx)
+            self._detect_duplicates(conn)
+        return {"case_id": case_id, "message_id": msg["id"]}
+
     def _attach_context(self, conn: sqlite3.Connection, case_id: str, c: dict[str, Any]) -> None:
         L = c["letter"]
 
@@ -161,7 +208,7 @@ class Desk:
         for i, a in enumerate(c["attempts"], start=1):
             add(
                 "attempt",
-                f"ATT-{L}{i}",
+                f"ATT-{L}{'-' if L.isdigit() else ''}{i}",
                 a["ts"],
                 f"Submission attempt {i} ({a['state']})",
                 {"state": a["state"], "file": a.get("file")},
@@ -454,7 +501,12 @@ class Desk:
                     else "Disabled until a professor approval exists",
                     "recorded": score_rec,
                 },
-                "ai": {"mode": "mock" if self.llm.mock else "vultr-inference"},
+                "workflow": self.analyzer.describe(conn, case_id, ev, case["status"]),
+                "ai": {
+                    "mode": self.settings.ai_mode,
+                    "provider": self.llm.provider,
+                    "model": self.settings.model or None,
+                },
             }
 
     # ----------------------------------------------------------------------- decisions
@@ -506,7 +558,23 @@ class Desk:
                     (case_id,),
                 ).fetchone()
                 if draft is None:
-                    raise DeskError(409, "Generate and review the reply draft before approving")
+                    raise DeskError(
+                        409, "Run the analysis and review the reply draft before approving"
+                    )
+                run = (
+                    conn.execute(
+                        "SELECT fingerprint FROM analysis_runs WHERE id=?", (draft["run_id"],)
+                    ).fetchone()
+                    if draft["run_id"]
+                    else None
+                )
+                if run and run["fingerprint"] != self.analyzer.fingerprint(ev):
+                    raise DeskError(
+                        409,
+                        "The analysis is out of date: the evidence changed after it ran. "
+                        "Run the analysis again, then review the new draft.",
+                        "analysis_stale",
+                    )
                 text = body if body is not None else (draft["body_edited"] or draft["body_ai"])
                 flags = guardrails.check_text(text, a)
                 if flags:
@@ -614,127 +682,6 @@ class Desk:
         return self.case_detail(case_id)
 
     # ----------------------------------------------------------------------- AI draft
-
-    def generate_draft(self, case_id: str) -> dict[str, Any]:
-        with self._conn() as conn:
-            case = self._case(conn, case_id)
-            if case["merged_into"]:
-                raise DeskError(409, f"Merged into {case['merged_into']}")
-            ev = self._evidence(conn, case_id)
-            ev.sort(key=lambda e: e["ts"])
-            a = analyze(ev)
-            bundle = {
-                "case": {
-                    k: case[k]
-                    for k in (
-                        "id",
-                        "course",
-                        "assignment",
-                        "assignment_name",
-                        "issue",
-                        "student_id",
-                    )
-                },
-                "analysis": a,
-                "student_claims": [
-                    {"ref_id": e["ref_id"], "text": e["source_text"]}
-                    for e in ev
-                    if e["source_type"] == "message" and e["payload"]["direction"] == "inbound"
-                ],
-                "evidence": [
-                    {
-                        "ref_id": e["ref_id"],
-                        "type": e["source_type"],
-                        "ts": e["ts"],
-                        "summary": e["summary"],
-                        "source_text": e["source_text"],
-                    }
-                    for e in ev
-                ],
-                "computed": {
-                    k: a[k]
-                    for k in (
-                        "deadline",
-                        "attempts",
-                        "score_state",
-                        "policy",
-                        "submission_state",
-                        "blockers",
-                        "gates",
-                        "professor_approved",
-                    )
-                },
-            }
-            ai_status, source, error = ("mock", "mock", "") if self.llm.mock else ("ok", "llm", "")
-            try:
-                raw = self.llm.draft(bundle)
-            except Exception as exc:  # LLM failure/timeout must never break the app
-                raw = build_template_draft(bundle)
-                ai_status, source, error = "unavailable", "rules-only", str(exc)[:300]
-            draft = guardrails.validate_draft(raw, a)
-            version = (
-                1
-                + (
-                    conn.execute(
-                        "SELECT COALESCE(MAX(version),0) FROM response_drafts WHERE case_id=?",
-                        (case_id,),
-                    ).fetchone()[0]
-                )
-            )
-            conn.execute(
-                "INSERT INTO response_drafts (case_id, version, body_ai, verified, unverified,"
-                " flags, ai_status, source, classification_ai, summary_ai, created_at)"
-                " VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-                (
-                    case_id,
-                    version,
-                    draft["reply"],
-                    j(draft["verified"]),
-                    j(draft["unverified"]),
-                    j(draft["flags"]),
-                    ai_status,
-                    source,
-                    draft["classification"],
-                    draft["summary"],
-                    now(),
-                ),
-            )
-            if ai_status != "unavailable":
-                cited = sorted({i for c in draft["verified"] for i in c["evidence_ids"]})
-                conn.execute(
-                    "INSERT INTO recommendations (case_id, source, rationale, uncertainty,"
-                    " evidence_ids, policy_version, created_at) VALUES (?,?,?,?,?,?,?)",
-                    (
-                        case_id,
-                        "ai",
-                        draft["rationale"],
-                        draft["uncertainty"],
-                        j(cited),
-                        a["policy"]["version"],
-                        now(),
-                    ),
-                )
-            else:
-                conn.execute(
-                    "INSERT INTO recommendations (case_id, source, rationale, uncertainty,"
-                    " evidence_ids, policy_version, created_at) VALUES (?,?,?,?,?,?,?)",
-                    (
-                        case_id,
-                        "rules",
-                        draft["rationale"],
-                        draft["uncertainty"],
-                        j([]),
-                        a["policy"]["version"],
-                        now(),
-                    ),
-                )
-        result = self.case_detail(case_id)
-        result["ai"] = {
-            "mode": "mock" if self.llm.mock else "vultr-inference",
-            "status": ai_status,
-            "error": error,
-        }
-        return result
 
     def save_draft(self, case_id: str, body: str) -> dict[str, Any]:
         with self._conn() as conn:
