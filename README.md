@@ -25,7 +25,7 @@ GradeCase turns scattered messages into **one case with one evidence bundle**, a
 ## How it uses Vultr
 
 - **Vultr VM**: the whole app (Caddy + FastAPI + SQLite on a Docker volume) runs on one Ubuntu 24.04 instance via `docker compose`. See [deploy/DEPLOY.md](deploy/DEPLOY.md).
-- **Vultr Firewall**: only ports 22, 80 and 443.
+- **Vultr Firewall (recommended, NOT yet configured)**: no Vultr Firewall group is set up on the current VM. We recommend allowing only ports 22, 80 and 443; the steps are in [deploy/DEPLOY.md](deploy/DEPLOY.md).
 - **Vultr Serverless Inference (optional, currently NOT connected)**: if `VULTR_INFERENCE_API_KEY` is set, the reply draft is generated through the OpenAI-compatible endpoint. The current deployment has no key, so it runs in a deterministic mock mode and the UI says so; the app only describes itself as using Vultr inference when a key is configured. *TODO: record the model id we choose after checking `/api/models`.*
 
 ## Architecture
