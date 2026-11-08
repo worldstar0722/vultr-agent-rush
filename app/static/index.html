@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Agent Rush</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <main>
+    <header>
+      <h1 id="name">…</h1>
+      <p id="tagline"></p>
+      <p id="modes" class="modes"></p>
+    </header>
+
+    <form id="form">
+      <textarea id="task" rows="3" placeholder="Describe a task for the agent…" required></textarea>
+      <div class="row">
+        <button id="start" type="submit">Run agent</button>
+        <span class="examples">
+          Try:
+          <button type="button" class="chip" data-task="Run some python code">run code</button>
+          <button type="button" class="chip" data-task="Use python to download a web page from the internet">network (blocked)</button>
+          <button type="button" class="chip" data-task="Run python code that loops forever">timeout (killed)</button>
+          <button type="button" class="chip" data-task="Summarize results and email the team">needs approval</button>
+        </span>
+      </div>
+    </form>
+
+    <section id="approval" hidden>
+      <p><strong>Approval needed.</strong> <span id="approval-text"></span></p>
+      <button id="approve" class="ok">Approve</button>
+      <button id="reject" class="no">Reject</button>
+    </section>
+
+    <ol id="timeline"></ol>
+  </main>
+  <script src="/static/app.js"></script>
+</body>
+</html>

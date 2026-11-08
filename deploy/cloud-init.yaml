@@ -1,0 +1,20 @@
+#cloud-config
+# Ubuntu 24.04 user-data: installs Docker, clones the repo, starts the stack.
+# Paste into the "Cloud-Init User-Data" field when creating the instance (verify the
+# exact field name in the Vultr console). Do NOT put API keys in here: user-data is not a
+# safe place for secrets. SSH in afterwards and edit /opt/agent-rush/.env instead.
+package_update: true
+packages:
+  - git
+  - curl
+  - ca-certificates
+
+runcmd:
+  # Official Docker convenience script (installs engine + compose plugin)
+  - curl -fsSL https://get.docker.com | sh
+  # TODO: change if the repo moves / is renamed. The repo must be public for this to work.
+  - git clone https://github.com/worldstar0722/vultr-agent-rush.git /opt/agent-rush
+  - cp /opt/agent-rush/.env.example /opt/agent-rush/.env
+  # Image used by the optional code sandbox (SANDBOX_ENABLED=true)
+  - docker pull python:3.12-slim
+  - cd /opt/agent-rush && docker compose up -d --build

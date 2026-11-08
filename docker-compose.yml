@@ -1,0 +1,42 @@
+# Usage:  cp .env.example .env  &&  docker compose up -d --build
+services:
+  app:
+    build: .
+    env_file: .env
+    restart: unless-stopped
+    expose:
+      - "8000"
+    # --- Real sandbox (Track 1) -------------------------------------------------
+    # To run code in throwaway Docker containers, set SANDBOX_ENABLED=true in .env and
+    # UNCOMMENT the two lines below. SECURITY: access to the docker socket is
+    # effectively root on the VM. Only do this on a disposable demo VM, never reuse
+    # the VM for anything else. Also run once on the VM: docker pull python:3.12-slim
+    # volumes:
+    #   - /var/run/docker.sock:/var/run/docker.sock
+    # user: root   # (the socket is root-owned; the app then runs as root inside its container)
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    depends_on:
+      - app
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      # ":-" means: use ":80" when DOMAIN is unset OR empty.
+      SITE_ADDRESS: ${DOMAIN:-:80}
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  caddy_data:
+  caddy_config:

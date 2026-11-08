@@ -1,0 +1,44 @@
+:root {
+  --bg: #fafafa; --fg: #1a1a1a; --muted: #6b7280; --card: #fff; --line: #e5e7eb;
+  --accent: #2563eb; --ok: #16a34a; --bad: #dc2626; --bad-bg: #fee2e2; --warn-bg: #fef3c7;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0f1115; --fg: #e5e7eb; --muted: #9ca3af; --card: #181b22; --line: #2a2f3a;
+    --bad-bg: #3b1519; --warn-bg: #3a2f10;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--fg);
+  font: 16px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+main { max-width: 760px; margin: 0 auto; padding: 24px 16px 64px; }
+h1 { margin: 0; font-size: 1.6rem; }
+header p { margin: 4px 0 0; color: var(--muted); }
+.modes { font-size: .8rem; }
+textarea { width: 100%; padding: 10px; font: inherit; color: inherit; background: var(--card);
+  border: 1px solid var(--line); border-radius: 8px; resize: vertical; margin-top: 16px; }
+.row { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin-top: 8px; }
+.examples { font-size: .85rem; color: var(--muted); }
+button { font: inherit; cursor: pointer; border-radius: 8px; padding: 8px 16px;
+  border: 1px solid var(--line); background: var(--card); color: var(--fg); }
+#start, button.ok { background: var(--accent); color: #fff; border-color: var(--accent); }
+button.ok { background: var(--ok); border-color: var(--ok); }
+button.no { background: var(--bad); border-color: var(--bad); color: #fff; }
+button:disabled { opacity: .5; cursor: default; }
+.chip { padding: 2px 10px; font-size: .8rem; border-radius: 999px; }
+#approval { margin-top: 20px; padding: 12px 16px; background: var(--warn-bg);
+  border: 1px solid #f59e0b; border-radius: 8px; }
+#approval[hidden] { display: none; }
+#timeline { list-style: none; padding: 0; margin: 24px 0 0; }
+#timeline li { background: var(--card); border: 1px solid var(--line); border-left-width: 4px;
+  border-radius: 8px; padding: 8px 12px; margin-bottom: 8px; }
+#timeline .type { font-size: .75rem; font-weight: 600; text-transform: uppercase;
+  letter-spacing: .05em; color: var(--muted); }
+#timeline .body { white-space: pre-wrap; word-break: break-word; font-size: .92rem; }
+li.plan, li.tool_call { border-left-color: var(--accent); }
+li.verify, li.done, li.approval_granted { border-left-color: var(--ok); }
+li.approval_requested, li.approval_denied { border-left-color: #f59e0b; }
+li.error, li.blocked { border-left-color: var(--bad); }
+li.blocked { background: var(--bad-bg); }
+li.blocked .type { color: var(--bad); }
+li.blocked .body { font-weight: 600; }

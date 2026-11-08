@@ -1,0 +1,9 @@
+# SITE_ADDRESS is set by docker-compose.yml:
+#   DOMAIN=agent.example.com  -> Caddy serves that name and gets an HTTPS cert automatically
+#   DOMAIN empty              -> ":80" = plain HTTP on the server IP
+{$SITE_ADDRESS} {
+	reverse_proxy app:8000 {
+		# Don't buffer: Server-Sent Events must reach the browser immediately.
+		flush_interval -1
+	}
+}
