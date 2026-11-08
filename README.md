@@ -69,7 +69,7 @@ Needs Python 3.12+.
 ```bash
 python -m venv .venv && source .venv/bin/activate && pip install -r requirements-dev.txt
 export DB_PATH=./gradecase.db
-uvicorn app.main:app --reload
+uvicorn app.main:create_app --factory --reload
 ```
 
 Open http://localhost:8000. Checks: `ruff check . && pytest -q`. "Reset demo data" in the footer restores the fixtures. To try real inference set `VULTR_INFERENCE_API_KEY`, call `GET /api/models`, then set `LLM_MODEL` (see `.env.example`).

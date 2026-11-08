@@ -1,4 +1,7 @@
-"""FastAPI app. Run with: uvicorn app.main:app --reload"""
+"""FastAPI app. Run with: uvicorn app.main:create_app --factory --reload
+
+There is deliberately no module-level `app`: importing this module must not touch the disk.
+"""
 
 from __future__ import annotations
 
@@ -141,6 +144,3 @@ def create_app(settings: Settings | None = None, *, llm: LLM | None = None) -> F
 
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
     return app
-
-
-app = create_app()

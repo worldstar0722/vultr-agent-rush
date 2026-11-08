@@ -29,3 +29,14 @@ def test_invalid_role_and_unknown_case(client):
     assert client.get("/api/cases/NOPE").status_code == 404
     r = client.post("/api/cases/CASE-D/decision", json={"role": "student", "action": "hold"})
     assert r.status_code == 400
+
+
+def test_importing_the_app_module_has_no_side_effects(tmp_path):
+    """Regression: CI imports app.main as a non-root user; import must not create a DB."""
+    import subprocess
+    import sys
+
+    target = tmp_path / "should_not_exist" / "gc.db"
+    code = "import app.main"
+    subprocess.run([sys.executable, "-c", code], check=True, env={"DB_PATH": str(target)})
+    assert not target.parent.exists()
