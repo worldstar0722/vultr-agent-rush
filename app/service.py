@@ -90,7 +90,8 @@ class Desk:
                     m["student"],
                     m.get("owner"),
                     "New",
-                    classify_issue(m["text"]) if m["direction"] == "inbound" else "other",
+                    m.get("issue")
+                    or (classify_issue(m["text"]) if m["direction"] == "inbound" else "other"),
                     ts,
                     ts,
                 ),
@@ -175,6 +176,7 @@ class Desk:
                 "owner": req.owner,
                 "course": req.course,
                 "source": req.source,
+                "issue": req.issue,
                 "text": m.text,
             }
             self._import(conn, msg, ctx)
@@ -705,6 +707,79 @@ class Desk:
         return self.case_detail(case_id)
 
     # ----------------------------------------------------------------------- AI draft
+
+    def activity(self, limit: int = 10) -> list[dict[str, Any]]:
+        """Recent real events: analysis runs, decisions and new cases, newest first."""
+        limit = max(1, min(int(limit), 50))
+        out: list[dict[str, Any]] = []
+        with self._conn() as conn:
+            for r in conn.execute(
+                "SELECT case_id, mode, outcome, model, latency_ms, started_at, finished_at, error_kind,"
+                " validation FROM analysis_runs WHERE outcome != 'running' ORDER BY id DESC LIMIT ?",
+                (limit,),
+            ):
+                flags = json.loads(r["validation"] or "{}").get("flags", [])
+                first = next((f for f in flags if f.get("message")), None)
+                out.append({"kind": "analysis", "ts": r["finished_at"] or r["started_at"],
+                            "case_id": r["case_id"], "mode": r["mode"], "outcome": r["outcome"],
+                            "latency_ms": r["latency_ms"], "error_kind": r["error_kind"],
+                            "detail": first["message"] if first else ""})  # fmt: skip
+            for r in conn.execute(
+                "SELECT case_id, actor, role, action, ts, from_status, to_status FROM decisions "
+                "ORDER BY id DESC LIMIT ?",
+                (limit,),
+            ):
+                out.append({"kind": "decision", "ts": r["ts"], "case_id": r["case_id"],
+                            "actor": r["actor"], "role": r["role"], "action": r["action"],
+                            "from_status": r["from_status"], "to_status": r["to_status"]})  # fmt: skip
+            for r in conn.execute(
+                "SELECT c.id, c.created_at, (SELECT payload FROM evidence e WHERE e.case_id=c.id AND"
+                " e.source_type='message' ORDER BY e.ts LIMIT 1) AS msg FROM cases c "
+                "WHERE c.merged_into IS NULL ORDER BY c.created_at DESC LIMIT ?",
+                (limit,),
+            ):
+                src = json.loads(r["msg"] or "{}").get("source", "form")
+                out.append(
+                    {"kind": "case", "ts": r["created_at"], "case_id": r["id"], "source": src}
+                )
+        out.sort(key=lambda e: e["ts"] or "", reverse=True)
+        return out[:limit]
+
+    def guardrail_demo(self, case_id: str) -> dict[str, Any]:
+        """Run a deliberately faulty reply, written by us (NOT a model), through the real guardrails.
+
+        Nothing is stored, no model is called and no budget is used. It exists so the safety
+        checks can be shown working even when no live AI is connected.
+        """
+        with self._conn() as conn:
+            self._case(conn, case_id)
+            a = analyze(self._evidence(conn, case_id))
+        ref = next(
+            (i for i in a["ids"] if i.startswith(("ATT-", "DL-", "SCORE-", "MSG-"))), "MSG-X"
+        )
+        raw = {
+            "classification": "late_flag",
+            "summary": "The rubric rows add up: 9+1=11.",
+            "verified": [
+                {"text": "The late policy POL-DEMO-v9 allows this exception.", "evidence_ids": ["POL-DEMO-v9"]},
+                {"text": "The submission arrived at 03:33.", "evidence_ids": [ref]},
+            ],
+            "unverified": [],
+            "unresolved": [],
+            "reply": f"Your rubric total is 11 [{ref}], per [POL-DEMO-v9]. We will regrade this and "
+            "remove the late penalty.",
+            "rationale": "",
+            "uncertainty": "",
+        }  # fmt: skip
+        out = guardrails.validate_draft(raw, a)
+        return {
+            "demonstration": True,
+            "note": "This reply was written by GradeCase to show the checks. It did not come from a model.",
+            "reply": raw["reply"],
+            "summary": raw["summary"],
+            "flags": out["flags"],
+            "rejected": bool(guardrails.blocking_flags(out["flags"])),
+        }
 
     def save_draft(self, case_id: str, body: str) -> dict[str, Any]:
         with self._conn() as conn:

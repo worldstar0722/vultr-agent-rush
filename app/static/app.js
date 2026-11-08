@@ -147,24 +147,56 @@ function confirmDiscard(what) {
 
 // ------------------------------------------------------------------ shell (rail, crumbs)
 
+// ------------------------------------------------------------------ icons (built with createElementNS, never markup strings)
+
+const SVG_NS = "http://www.w3.org/2000/svg";
+const ICONS = {
+  dashboard: "M3 3h8v8H3zM13 3h8v5h-8zM13 10h8v11h-8zM3 13h8v8H3z",
+  queue: "M4 6h16M4 12h16M4 18h10",
+  board: "M4 4h5v16H4zM10 4h5v10h-5zM16 4h4v13h-4z",
+  calendar: "M5 5h14a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1zM4 10h16M9 3v4M15 3v4",
+  plus: "M12 5v14M5 12h14",
+  file: "M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8zM14 3v5h5M9 13h6M9 17h6",
+  check: "M5 13l4 4L19 7",
+  x: "M6 6l12 12M18 6L6 18",
+  arrow: "M5 12h14M13 6l6 6-6 6",
+  user: "M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM4 21a8 8 0 0 1 16 0",
+};
+function icon(name, cls = "") {
+  const svg = document.createElementNS(SVG_NS, "svg");
+  for (const [k, v] of Object.entries({ viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", "stroke-width": "2",
+    "stroke-linecap": "round", "stroke-linejoin": "round", "aria-hidden": "true" })) svg.setAttribute(k, v);
+  if (cls) svg.setAttribute("class", cls);
+  const p = document.createElementNS(SVG_NS, "path");
+  p.setAttribute("d", ICONS[name]);
+  svg.append(p);
+  return svg;
+}
+
+// who did the work. Rules compute, AI explains, humans decide: shown wherever it matters.
+const who = (kind, text) => h("span", { class: `who ${kind}` }, text);
+
+// ------------------------------------------------------------------ sidebar AI status card
+
 function aiIndicator() {
-  const a = S.ai;
-  if (!a) return [h("div", { class: "ai-title" }, "AI status unknown")];
-  const out = [];
-  const b = a.budget;
-  if (a.mode === "mock") {
-    out.push(h("div", { class: "ai-title" }, "Rules + demo drafts"), h("div", { class: "ai-sub" }, "Live AI not connected"));
-  } else if (a.mode === "misconfigured") {
-    out.push(h("div", { class: "ai-title" }, "AI not usable"), h("div", { class: "ai-sub" }, "A model id is not set on the server"));
-  } else if (a.last_success_at) {
-    out.push(h("div", { class: "ai-title" }, "Live AI: last call succeeded"), h("div", { class: "ai-sub" }, `${a.model}, ${fmt(a.last_success_at, true)}`));
-  } else {
-    out.push(h("div", { class: "ai-title" }, "Live AI configured"), h("div", { class: "ai-sub" }, `${a.model}: no successful call yet`));
-  }
+  const a = S.ai, b = a && a.budget;
+  if (!a) return [h("div", { class: "ai-head" }, h("span", { class: "ai-dot" }), "AI status unknown")];
+  let dot = "", title, sub;
+  if (a.mode === "mock") { title = "Mock mode"; sub = "Live AI not connected"; }
+  else if (a.mode === "misconfigured") { dot = "warn"; title = "Not usable"; sub = "A model id is not set on the server"; }
+  else if (a.last_success_at) { dot = "live"; title = "Connected"; sub = `Last call succeeded ${fmt(a.last_success_at, true)}`; }
+  else { dot = "warn"; title = "Configured"; sub = "No successful call yet"; }
+  const out = [h("div", { class: "ai-head" }, h("span", { class: `ai-dot ${dot}` }), title)];
+  if (a.mode !== "mock" && a.model) out.push(h("div", { class: "ai-model" }, a.model));
+  out.push(h("div", { class: "ai-sub" }, sub));
   if (a.mode === "configured" && a.last_failure && (!a.last_success_at || a.last_failure.at > a.last_success_at)) {
     out.push(h("div", { class: "ai-sub warn" }, `Last call failed: ${a.last_failure.kind}`));
   }
-  if (a.mode !== "mock" && b) out.push(h("div", { class: "ai-sub" }, `${b.calls_remaining} of ${b.calls_limit} lifetime AI calls left`));
+  if (a.mode !== "mock" && b) {
+    const pct = b.calls_limit ? Math.min(100, Math.round((b.calls_used / b.calls_limit) * 100)) : 0;
+    out.push(h("div", { class: "ai-sub" }, `${b.calls_used}/${b.calls_limit} lifetime calls (${pct}%)`),
+      h("div", { class: "progress", role: "img", "aria-label": `${pct}% of the lifetime AI calls used` }, h("span", { style: `width:${pct}%` })));
+  }
   return out;
 }
 
@@ -173,24 +205,32 @@ async function refreshAi() {
   $("ai").replaceChildren(...aiIndicator());
 }
 
+// ------------------------------------------------------------------ shell and routing
+
 function renderShell(route) {
-  const link = (label, href, current) =>
-    h("a", { href, class: "navlink", "aria-current": current ? "page" : null }, label);
-  const nav = [link("Case Queue", "#/queue", route.screen === "queue"), link("Board", "#/board", route.screen === "board"),
-    link("Calendar", "#/calendar", route.screen === "calendar"), link("New synthetic case", "#/new", route.screen === "intake")];
+  const link = (label, href, ic, current) =>
+    h("a", { href, class: "navlink", "aria-label": label, title: label, "aria-current": current ? "page" : null },
+      icon(ic, "navicon"), h("span", { class: "navlabel" }, label));
+  const nav = [link("Dashboard", "#/dashboard", "dashboard", route.screen === "dashboard"),
+    link("Case Queue", "#/queue", "queue", route.screen === "queue"),
+    link("Board", "#/board", "board", route.screen === "board"),
+    link("Calendar", "#/calendar", "calendar", route.screen === "calendar"),
+    h("div", { class: "navdivider", role: "separator" }),
+    link("New case", "#/new", "plus", route.screen === "intake")];
   if (route.caseId) {
     nav.push(h("div", { class: "navgroup" }, h("div", { class: "label" }, "Selected case"),
       h("div", { class: "mono navcase" }, route.caseId),
-      link("Evidence", `#/case/${route.caseId}/evidence`, route.screen === "evidence"),
-      link("Decision", `#/case/${route.caseId}/decision`, route.screen === "decision")));
+      link("Evidence", `#/case/${route.caseId}/evidence`, "file", route.screen === "evidence"),
+      link("Decision", `#/case/${route.caseId}/decision`, "check", route.screen === "decision")));
   }
   $("nav").replaceChildren(...nav);
 
-  const crumbs = [h("a", { href: "#/queue" }, "Cases")];
-  const SIMPLE = { intake: "New synthetic case", board: "Board", calendar: "Calendar" };
+  const SIMPLE = { dashboard: "Dashboard", queue: "Case Queue", intake: "New case", board: "Board", calendar: "Calendar" };
+  const crumbs = [h("a", { href: "#/dashboard" }, "GradeCase")];
   if (SIMPLE[route.screen]) {
     crumbs.push(h("span", { class: "sep" }, "/"), h("span", { "aria-current": "page" }, SIMPLE[route.screen]));
   } else if (route.caseId) {
+    crumbs.push(h("span", { class: "sep" }, "/"), h("a", { href: "#/queue" }, "Cases"));
     crumbs.push(h("span", { class: "sep" }, "/"), h("a", { href: `#/case/${route.caseId}/evidence` }, route.caseId));
     crumbs.push(h("span", { class: "sep" }, "/"), h("span", { "aria-current": "page" }, route.screen === "decision" ? "Decision" : "Evidence"));
   }
@@ -198,18 +238,21 @@ function renderShell(route) {
 
   for (const r of ["ta", "professor"]) $(`role-${r}`).setAttribute("aria-pressed", String(S.role === r));
   $("ai").replaceChildren(...aiIndicator());
-  document.title = `${({ queue: "Cases", intake: "New case", board: "Board", calendar: "Calendar" })[route.screen] || route.caseId} - GradeCase`;
+  document.title = `${SIMPLE[route.screen] || route.caseId} - GradeCase`;
 }
 
-// ------------------------------------------------------------------ routing
+function setMenu(open) {
+  document.body.classList.toggle("menu-open", open);
+  $("menu-btn").setAttribute("aria-expanded", String(open));
+  $("menu-btn").setAttribute("aria-label", open ? "Close menu" : "Open menu");
+  $("scrim").hidden = !open;
+}
 
 function parseRoute() {
   const p = location.hash.replace(/^#\/?/, "").split("/");
-  if (p[0] === "new") return { screen: "intake", caseId: null };
-  if (p[0] === "board") return { screen: "board", caseId: null };
-  if (p[0] === "calendar") return { screen: "calendar", caseId: null };
   if (p[0] === "case" && p[1]) return { screen: p[2] === "decision" ? "decision" : "evidence", caseId: p[1] };
-  return { screen: "queue", caseId: null };
+  const screens = { queue: "queue", new: "intake", board: "board", calendar: "calendar" };
+  return { screen: screens[p[0]] || "dashboard", caseId: null }; // the dashboard is the landing page
 }
 
 let renderToken = 0;
@@ -217,9 +260,10 @@ async function render() {
   const route = parseRoute();
   const token = ++renderToken;
   const view = $("view");
+  setMenu(false);
   renderShell(route);
   try {
-    const LIST_VIEWS = { queue: queueView, intake: intakeView, board: boardView, calendar: calendarView };
+    const LIST_VIEWS = { dashboard: dashboardView, queue: queueView, intake: intakeView, board: boardView, calendar: calendarView };
     if (LIST_VIEWS[route.screen]) {
       S.detail = null;
       S.ui = { caseId: null, note: "", counted: "", body: null };
@@ -228,6 +272,7 @@ async function render() {
       return;
     }
     if (S.ui.caseId !== route.caseId) S.ui = { caseId: route.caseId, note: "", counted: "", body: null };
+    S.decisionSteps = null;
     S.lastCase = route.caseId;
     if (!S.detail || S.detail.case.id !== route.caseId || S.refetch) {
       view.replaceChildren(h("p", { class: "muted pad" }, "Loading case..."));
@@ -237,12 +282,110 @@ async function render() {
     // Loading a page never starts an analysis: that is an explicit button, because it can cost money.
     if (token !== renderToken) return;
     view.replaceChildren(route.screen === "decision" ? decisionView() : evidenceView());
+    if (S.decisionSteps) S.decisionSteps();
   } catch (e) {
     if (token !== renderToken) return;
     view.replaceChildren(h("div", { class: "pad" }, h("div", { class: "notice error", role: "alert" }, `Could not load this screen: ${e.message}`),
       h("button", { type: "button", class: "btn", onclick: () => { S.refetch = true; render(); } }, "Try again"),
       " ", h("a", { class: "btn", href: "#/queue" }, "Back to cases")));
   }
+}
+
+// ------------------------------------------------------------------ dashboard (all numbers are real)
+
+const ago = (ts) => {
+  const t = Date.parse(ts);
+  if (Number.isNaN(t)) return "";
+  const s = Math.max(0, Math.round((Date.now() - t) / 1000));
+  if (s < 45) return "just now";
+  if (s < 3600) return `${Math.max(1, Math.round(s / 60))} min ago`;
+  if (s < 86400) return `${Math.round(s / 3600)} h ago`;
+  return `${Math.round(s / 86400)} d ago`;
+};
+const sameDay = (ts) => { const a = new Date(ts), b = new Date(); return a.toDateString() === b.toDateString(); };
+const caseLink = (id) => h("a", { href: `#/case/${id}/evidence` }, id);
+const ACTION_PHRASE = {
+  escalate: "escalated to the professor", request_info: "student information requested", hold: "placed on hold",
+  approve: "approved", reject: "rejected", merge: "merged with a duplicate", record_score_recommendation: "score recommendation recorded",
+};
+const SOURCE_PHRASE = { screenshot: " from a screenshot", document: " from an uploaded document", form: "" };
+
+function describeEvent(e) {
+  if (e.kind === "analysis") {
+    const sec = e.latency_ms ? ` (${(e.latency_ms / 1000).toFixed(1)}s)` : "";
+    if (e.outcome === "accepted") return { dot: "good", text: [caseLink(e.case_id), ` analysis completed: AI draft accepted${sec}`] };
+    if (e.outcome === "rejected") return { dot: "bad", text: [caseLink(e.case_id), ` analysis rejected: guardrails caught a problem. ${e.detail || ""}`.trim()] };
+    if (e.outcome === "error") return { dot: "warn", text: [caseLink(e.case_id), ` AI call failed (${e.error_kind || "error"}); rules-only draft used`] };
+    if (e.outcome === "mock") return { dot: "info", text: [caseLink(e.case_id), " analysis ran in mock mode (no model called)"] };
+    return { dot: "info", text: [caseLink(e.case_id), " rules-only draft prepared (no AI)"] };
+  }
+  if (e.kind === "decision") {
+    const by = `${e.actor} (${e.role === "ta" ? "TA" : "professor"})`;
+    return { dot: e.action === "approve" ? "good" : e.action === "reject" ? "bad" : "info",
+      text: [caseLink(e.case_id), ` ${ACTION_PHRASE[e.action] || e.action.replace(/_/g, " ")} by ${by}`] };
+  }
+  return { dot: "info", text: [`New case `, caseLink(e.case_id), ` created${SOURCE_PHRASE[e.source] || ""}`] };
+}
+
+async function dashboardView() {
+  const [cases, ai, feed] = await Promise.all([api("/api/cases"), api("/api/ai/status"), api("/api/activity?limit=8")]);
+  S.ai = ai; $("ai").replaceChildren(...aiIndicator());
+  const open = cases.filter((c) => c.status !== "Closed");
+  const needAction = open.filter((c) => c.status !== "Awaiting student info");
+  const closedToday = cases.filter((c) => c.status === "Closed" && c.decisions.some((d) => ["approve", "reject"].includes(d.action) && sameDay(d.ts)));
+  const week = cases.filter((c) => c.opened_at && Date.now() - Date.parse(c.opened_at) < 7 * 86400000);
+  const r = ai.runs, live = ai.mode !== "mock";
+  const lat = r.avg_live_latency_ms;
+  const demo = cases.find((c) => c.id === "CASE-A");
+  const STATUSES = ["New", "TA review", "Awaiting professor", "Awaiting student info", "Closed"];
+  const maxN = Math.max(1, cases.length);
+
+  const stat = (big, label, trend, flat) => h("div", { class: "scard" }, h("div", { class: "big" }, big), h("div", { class: "lab" }, label),
+    h("div", { class: `trend${flat ? " flat" : ""}` }, trend));
+  const bar = (label, n) => h("div", { class: "hbar" }, h("span", {}, label),
+    h("span", { class: "track" }, h("span", { class: `fill${n ? "" : " zero"}`, style: `width:${(n / maxN) * 100}%` })), h("span", { class: "n" }, n));
+  const answered = r.live_accepted + r.live_rejected;
+  const pct = answered ? Math.round((r.live_accepted / answered) * 100) : null;
+  const calls = ai.budget;
+  const callPct = calls.calls_limit ? Math.min(100, Math.round((calls.calls_used / calls.calls_limit) * 100)) : 0;
+
+  return h("div", { class: "page" }, noticeEl(),
+    h("div", { class: "pagehead", style: "margin-bottom:16px" }, h("h1", { class: "page-title" }, "Dashboard")),
+    h("section", { class: "hero" },
+      h("p", { class: "tagline", lang: "ko" }, "정보는 있는데, 사건은 없다"),
+      h("p", { class: "tagline-en" }, "The data exists, but the case doesn't."),
+      h("div", { class: "principle", "aria-label": "How GradeCase divides the work" },
+        who("rules", "Rules compute times and scores"), who("ai", "AI explains and drafts"), who("human", "Humans decide")),
+      h("div", { class: "demo" },
+        h("p", {}, h("strong", {}, "The demo case. "), "A student says “I submitted on time but it’s marked late.” GradeCase lines up both attempts against the policy, raises a review item, and the TA escalates it to the professor or closes it with an evidence-backed reply. Nothing is graded or sent for you."),
+        h("a", { class: "btn primary big", href: demo ? "#/case/CASE-A/evidence" : "#/queue" }, demo ? "Open the demo case" : "Open the case queue", icon("arrow")))),
+    h("div", { class: "statcards" },
+      stat(cases.length, "Total cases", week.length ? `↑ ${week.length} opened in the last 7 days` : "None opened in the last 7 days", !week.length),
+      stat(needAction.length, "Need action", `${open.length - needAction.length} waiting on a student`, true),
+      stat(closedToday.length, "Closed today", closedToday.length ? "Decided by a person" : "No case closed today", !closedToday.length),
+      stat(lat ? `${(lat / 1000).toFixed(1)}s` : "–", "Avg model latency", live ? (lat ? "Live runs since last reset" : "No live AI run yet") : "Mock mode: no model is called", true)),
+    h("div", { class: "dashgrid" },
+      h("section", { class: "dashcard" }, h("h2", {}, "Cases by status"), STATUSES.map((s) => bar(s, cases.filter((c) => c.status === s).length))),
+      h("section", { class: "dashcard" },
+        h("h2", {}, "AI performance", who(live ? "ai" : "template", live ? "Live AI" : "Mock mode")),
+        h("dl", { class: "kv" },
+          live && [h("dt", {}, "Lifetime calls"), h("dd", {}, `${calls.calls_used} / ${calls.calls_limit} (${callPct}%)`)],
+          live && [h("dt", {}, "Accepted by the guardrails"), h("dd", {}, r.live_accepted)],
+          live && [h("dt", {}, "Rejected by the guardrails"), h("dd", {}, r.live_rejected)],
+          live && [h("dt", {}, "Provider errors"), h("dd", {}, r.live_errors)],
+          !live && [h("dt", {}, "Mock template runs"), h("dd", {}, r.mock)],
+          [h("dt", {}, "Rules-only drafts"), h("dd", {}, r.rules_only)],
+          [h("dt", {}, "Avg model latency"), h("dd", {}, lat ? `${(lat / 1000).toFixed(1)}s` : "–")],
+          [h("dt", {}, "AI replies caught by guardrails"), h("dd", {}, r.guardrail_rejections)]),
+        live && h("div", {}, h("div", { class: "meta" }, answered ? `${pct}% of AI replies accepted` : "No live AI replies yet"),
+          h("div", { class: "progress light", role: "img", "aria-label": `${pct || 0}% of AI replies accepted` }, h("span", { style: `width:${pct || 0}%` }))),
+        !live && h("p", { class: "meta" }, "No model is called in mock mode, so there is no acceptance rate to show."),
+        h("p", { class: "meta" }, "Counts cover runs since the last demo reset. The lifetime call count is never reset."))),
+    h("section", { class: "dashcard" }, h("h2", {}, "Recent activity"),
+      feed.length ? h("ul", { class: "feed" }, feed.map((e) => {
+        const d = describeEvent(e);
+        return h("li", {}, h("span", { class: `fdot ${d.dot}` }), h("span", {}, d.text), h("time", { datetime: e.ts }, ago(e.ts)));
+      })) : h("p", { class: "muted" }, "Nothing has happened yet.")));
 }
 
 // ------------------------------------------------------------------ queue
@@ -316,7 +459,7 @@ async function queueView() {
 
   const view = h("div", { class: "page" },
     noticeEl(),
-    h("div", { class: "pagehead" }, h("h1", {}, "Cases"),
+    h("div", { class: "pagehead" }, h("h1", { class: "page-title" }, "Cases"),
       h("a", { class: "btn primary", href: "#/new" }, "New synthetic case")),
     h("p", { class: "lede" }, "Open a case to see the evidence, then record a decision. Nothing here changes a grade or sends a message."),
     duplicatePanel(cases),
@@ -424,58 +567,184 @@ function factSummary(d) {
   return [att ? [idChip(att.ref_id, d), ` was submitted ${mins(att)}. `] : "", rec.text];
 }
 
-function aiSourceLabel(v) {
-  return v.source === "live" ? `Live AI (${v.model})` : "Mock template (no model was called)";
+// ------------------------------------------------------------------ AI transparency: pipeline, statements, guardrails
+
+const PIPE_LABELS = ["Load evidence", "Compute rules", "Call AI model", "Validate claims", "Prepare draft", "Await human"];
+const STEP_STATE = { done: "done", failed: "failed", skipped: "skipped", pending: "waiting for you", running: "running", waiting: "waiting" };
+
+function stepMark(status) {
+  if (status === "done") return icon("check");
+  if (status === "failed") return icon("x");
+  if (status === "skipped") return "–";
+  return "";
 }
 
-function aiBlock(d) {
-  const wf = d.workflow, v = wf.view;
-  const head = h("h2", {}, "AI analysis");
-  if (!v) {
-    return h("section", { class: "block" }, head,
-      wf.rejected
-        ? h("p", { class: "flag" }, "The last AI reply failed validation against the records and was rejected, so there is no AI analysis to show. A rules-only draft exists instead.")
-        : h("p", { class: "muted" }, "No analysis has been run for this case. Nothing is sent to an AI model until someone clicks Run analysis on the Decision screen."),
-      h("a", { class: "btn", href: `#/case/${d.case.id}/decision` }, "Go to Decision"));
+// The stages come straight from the stored run: real operations with real durations.
+function pipelineView(run, d, animate) {
+  const draft = d && d.draft && d.draft.run_id === run.id ? d.draft : null;
+  const blocking = ((run.validation && run.validation.flags) || []).filter((f) => ["invalid_citation", "no_citation", "needs_verification", "commitment"].includes(f.kind)).length;
+  return h("ol", { class: `pipeline${animate ? " animate" : ""}`, "aria-label": "Analysis pipeline" }, run.stages.map((s, i) => {
+    let state = STEP_STATE[s.status] || s.status;
+    if (s.key === "call_model" && s.status === "done" && run.mode === "live" && run.latency_ms != null) state = `${(run.latency_ms / 1000).toFixed(1)}s`;
+    const subs = [];
+    if (s.key === "call_model" && run.mode === "live") {
+      subs.push(run.provider === "vultr-serverless-inference" ? "Vultr Serverless Inference" : run.provider);
+      if (run.prompt_tokens != null && run.completion_tokens != null)
+        subs.push(`Prompt: ${run.prompt_tokens.toLocaleString()} tokens → Completion: ${run.completion_tokens.toLocaleString()} tokens`);
+      if (run.attempts > 1) subs.push(`${run.attempts} provider attempts`);
+    }
+    if (s.key === "validate_evidence" && draft && run.validation && run.validation.passed !== null && s.status !== "skipped") {
+      subs.push(`${draft.verified.length} verified, ${draft.unverified.length} unverified, ${blocking} blocking problem${blocking === 1 ? "" : "s"}`);
+    }
+    return h("li", { class: `pstep ${s.status}`, style: `--i:${i}` },
+      h("span", { class: "pmark" }, stepMark(s.status)),
+      h("div", { class: "pbody" },
+        h("div", { class: "phead" }, h("span", { class: "plabel" }, s.label), h("span", { class: "pstate" }, state)),
+        s.detail && h("div", { class: "pmeta" }, s.detail),
+        subs.map((t) => h("div", { class: "psub" }, t))));
+  }));
+}
+
+// Shown only while the request is in flight. It claims nothing is done: only that the call is running.
+function pipelineRunning(live) {
+  return h("ol", { class: "pipeline", "aria-label": "Analysis running", "aria-busy": "true" }, PIPE_LABELS.map((label, i) => {
+    const running = i === 2;
+    return h("li", { class: `pstep ${running ? "running" : "waiting"}` }, h("span", { class: "pmark" }, running ? "•" : ""),
+      h("div", { class: "pbody" }, h("div", { class: "phead" }, h("span", { class: "plabel" }, label),
+        h("span", { class: "pstate" }, running ? (live ? "calling the model..." : "running locally...") : "waiting"))));
+  }));
+}
+
+const BLOCKING = ["invalid_citation", "no_citation", "needs_verification", "commitment"];
+function guardChecks(val, flagsOverride) {
+  const flags = flagsOverride || (val && val.flags) || [];
+  const timeLabels = ["recorded times", "minutes vs deadline"];
+  const rows = [
+    { q: "Citation check: do all cited IDs exist?", bad: flags.filter((f) => f.kind === "invalid_citation" || f.kind === "no_citation") },
+    { q: "Time check: do the AI's times match the records?", bad: flags.filter((f) => f.kind === "needs_verification" && timeLabels.includes(f.label)) },
+    { q: "Number check: do scores match the computed values?", bad: flags.filter((f) => f.kind === "needs_verification" && !timeLabels.includes(f.label)) },
+    { q: "Commitment check: no promised outcomes?", bad: flags.filter((f) => f.kind === "commitment") },
+  ];
+  if (val && val.schema_ok === false) {
+    rows.unshift({ q: "Structure check: is the reply well formed?", bad: [{ message: (flags.find((f) => f.kind === "schema") || {}).message || "The reply did not match the required structure." }] });
   }
-  const rulesIssue = d.case.issue;
-  return h("section", { class: "block" }, head,
-    h("p", { class: "meta" }, aiSourceLabel(v), `. Validated against the records.`,
-      v.stale && h("span", { class: "badge warn" }, d.case.status === "Closed" ? "Generated before the decision" : "Evidence changed since this ran")),
-    h("p", {}, v.summary),
-    h("p", { class: "meta" }, `AI classification: ${v.classification.replace(/_/g, " ")}. Rules classification: ${rulesIssue.replace(/_/g, " ")}.`,
-      v.classification !== rulesIssue && h("span", { class: "badge warn" }, "They disagree")),
-    v.unresolved.length > 0 && h("div", {}, h("h3", {}, "Unresolved decisions"),
-      h("ul", { class: "plain" }, v.unresolved.map((u) => h("li", {}, u)))),
-    h("details", { class: "more" }, h("summary", {}, `Verified (${v.verified.length}) and unverified (${v.unverified.length}) statements`),
-      claimBlock("Verified: each cites a record", v.verified, d), claimBlock("Unverified: not confirmed by the records", v.unverified, d)),
-    h("p", { class: "meta" }, "Validation checks that citations exist and that numbers, times and promise wording match the records. It cannot prove every statement is correct, so a person must read the reply before approving."));
+  return rows;
+}
+
+function guardrailTable(rows, verdict) {
+  const passed = rows.filter((r) => !r.bad.length).length;
+  return h("div", {},
+    h("table", { class: "gtable" },
+      h("thead", {}, h("tr", {}, h("th", { scope: "col" }, "Guardrail check"), h("th", { scope: "col" }, "Result"))),
+      h("tbody", {}, rows.map((r) => h("tr", {},
+        h("td", {}, r.q, r.bad.map((f) => h("div", { class: "gwhy" }, f.message))),
+        h("td", {}, h("span", { class: `gres ${r.bad.length ? "bad" : "ok"}` }, r.bad.length ? "✗ FAILED" : "✓ Pass")))))),
+    h("div", { class: `gtotal ${passed === rows.length ? "ok" : "bad"}` }, `${passed}/${rows.length} passed`),
+    verdict && h("div", { class: `gverdict ${verdict.kind}` }, verdict.text));
+}
+
+function stmtList(title, kind, claims, d) {
+  if (!claims.length) return null;
+  return h("div", {}, h("div", { class: `sect-title ${kind === "verified" ? "ok" : "warn"}` },
+    kind === "verified" ? "✓ Verified" : "⚠ Unverified", ` (${plural(claims.length, "statement")})`),
+    h("ul", { class: "stmts" }, claims.map((c) => h("li", { class: `stmt${kind === "verified" ? "" : " unverified"}` },
+      h("span", {}, c.text, (c.flags || []).filter((f) => f.kind === "needs_verification").map((f) => h("span", { class: "badge bad" }, `code value: ${f.code_value}`))),
+      h("span", { class: "ids" }, chips(c.evidence_ids, d))))));
+}
+
+async function showGuardrailDemo(d, slot, btn) {
+  if (S.busy) return;
+  S.busy = true; btn.disabled = true;
+  try {
+    const r = await api(`/api/cases/${d.case.id}/guardrail-demo`, { method: "POST" });
+    slot.replaceChildren(h("div", { class: "demo-box" },
+      h("p", {}, who("template", "Demonstration"), " ", h("strong", {}, r.note), " Nothing was stored and no AI model or budget was used."),
+      h("p", { class: "label", style: "margin-top:10px" }, "The faulty reply"), h("blockquote", {}, `${r.summary}\n\n${r.reply}`),
+      guardrailTable(guardChecks(null, r.flags), { kind: "bad", text: r.rejected ? "Rejected: a reply like this would never reach a person. A rules-only draft would be shown instead." : "This reply would pass." })));
+  } catch (e) { slot.replaceChildren(h("div", { class: "notice error", role: "alert" }, `Could not run the demonstration: ${e.message}`)); }
+  finally { S.busy = false; btn.disabled = false; }
+}
+
+function runButtons(d, label) {
+  const closed = d.case.status === "Closed";
+  if (closed) return null;
+  const live = d.ai.mode !== "mock";
+  const b = S.ai && S.ai.budget;
+  const blocked = live && (d.ai.mode === "misconfigured" || (b && b.exhausted));
+  return [h("button", { type: "button", class: "btn primary", id: "run-analysis", disabled: !!(S.busy || blocked), onclick: (e) => runAnalysis({ force: d.workflow.current_valid, rules_only: false }, e.currentTarget) },
+      label || (d.workflow.current_valid ? "Regenerate analysis" : "Run analysis")),
+    h("button", { type: "button", class: "btn", id: "run-rules", disabled: !!S.busy, onclick: (e) => runAnalysis({ force: false, rules_only: true }, e.currentTarget) }, "Create rules-only draft (no AI)")];
+}
+
+function aiCard(d) {
+  const wf = d.workflow, run = wf.latest, v = wf.view, mockMode = d.ai.mode === "mock";
+  const slot = h("div", {});
+  const demoBtn = h("button", { type: "button", class: "btn quiet", onclick: (e) => showGuardrailDemo(d, slot, e.currentTarget) }, "See the guardrails catch a bad reply (demonstration)");
+  const head = h("h2", {}, "What the AI found",
+    run && run.mode === "live" ? who("ai", "AI explains") : who("template", run ? "Template, no model called" : "Not run yet"));
+  const principle = h("p", { class: "meta" }, who("ai", "AI explains"), " It classifies, summarises and drafts. ", who("human", "Humans decide"), " Nothing happens until a person records a decision.");
+  if (!run) {
+    return h("section", { class: "block aicard" }, head, principle,
+      h("p", { class: "muted", style: "margin-top:10px" }, mockMode ? "No analysis has run for this case. Mock mode runs a free local template: no AI model is called." : "No analysis has run for this case. Nothing is sent to the AI provider until someone clicks Run analysis; each run uses one of the lifetime AI calls."),
+      h("div", { class: "pipeline-slot" }), h("div", { class: "btnrow" }, runButtons(d), demoBtn), h("div", { id: "ai-err", role: "alert" }), slot);
+  }
+  const rules = d.case.issue.replace(/_/g, " ");
+  const kids = [head, principle];
+  if (v) {
+    const ai = v.classification.replace(/_/g, " "), match = v.classification === d.case.issue;
+    kids.push(h("div", { class: "match", style: "margin-top:12px" },
+      h("span", {}, v.source === "live" ? "AI classified this as: " : "Template classified this as: ", h("strong", {}, ai)), h("span", { class: "arrow" }, "↔"),
+      h("span", {}, "Rules read it as: ", h("strong", {}, rules)),
+      h("span", { class: `res ${match ? "ok" : "bad"}` }, match ? "✓ Match" : "✗ They differ")));
+    kids.push(h("p", { class: "lead", style: "font-size:14px" }, v.summary));
+  } else {
+    kids.push(h("p", { class: "flag" }, run.outcome === "rejected" ? "The AI replied, but its answer failed the guardrails and was rejected, so none of its statements are shown as findings. A rules-only draft was prepared instead."
+      : run.outcome === "error" ? `The AI call failed (${run.error_message || "error"}). A rules-only draft was prepared instead.` : "This was a rules-only draft: no AI text exists to show."));
+  }
+  kids.push(h("div", { class: "rule" }), h("h4", {}, `Pipeline, run #${run.id}`, " ", h("span", { class: "meta", style: "text-transform:none;letter-spacing:0" }, `started ${fmt(run.started_at, true)}`)),
+    h("div", { class: "pipeline-slot" }, pipelineView(run, d, S.animateRun === run.id)));
+  if (v) kids.push(h("div", { class: "rule" }), stmtList("Verified", "verified", v.verified, d), stmtList("Unverified", "unverified", v.unverified, d),
+    v.unresolved.length > 0 && h("div", {}, h("div", { class: "sect-title warn" }, "Unresolved decisions"), h("ul", { class: "plain", style: "margin-top:8px" }, v.unresolved.map((u) => h("li", {}, u)))));
+  // guardrail results: shown whenever the reply reached validation
+  const val = run.validation || {};
+  kids.push(h("div", { class: "rule" }), h("h4", {}, "Guardrail results"));
+  if (val.passed === undefined || val.passed === null) {
+    kids.push(h("p", { class: "meta", style: "margin-top:8px" }, run.mode === "rules-only" ? "Not applicable: this draft is a rules-only template, not AI text." : "The guardrails did not run: there was no AI reply to check."));
+  } else {
+    kids.push(guardrailTable(guardChecks(val), run.outcome === "rejected" ? { kind: "bad", text: "AI reply REJECTED. A rules-only draft is shown instead." }
+      : { kind: "ok", text: run.mode === "live" ? "All checks passed. A person must still read the reply." : "Checks passed on the mock template. No model was involved." }));
+  }
+  kids.push(h("p", { class: "meta", style: "margin-top:10px" }, "These checks cover citations, times, numbers and promise wording. They cannot prove every statement is true, so a person must read the reply before approving."));
+  if (wf.stale) kids.push(h("p", { class: "flag" }, d.case.status === "Closed" ? "This analysis was generated before the decision was recorded." : "The evidence changed after this analysis. Run it again before approving."));
+  kids.push(h("div", { class: "btnrow" }, runButtons(d), demoBtn), h("div", { id: "ai-err", role: "alert" }), slot);
+  return h("section", { class: "block aicard" }, kids);
 }
 
 function evidenceView() {
   const d = S.detail, a = d.analysis;
   const closed = d.case.status === "Closed";
   const cta = closed ? h("a", { class: "btn", href: `#/case/${d.case.id}/decision` }, "View decision record")
-    : h("a", { class: "btn primary big", href: `#/case/${d.case.id}/decision` }, "Review decision");
+    : h("a", { class: "btn primary big", href: `#/case/${d.case.id}/decision` }, "Review decision", icon("arrow"));
   const open = d.review_items.filter((r) => r.status === "open");
   const aside = h("aside", { class: "aside" },
     h("section", { class: "panel sticky" },
       h("h2", {}, "What needs a decision"),
       h("p", { class: "route" }, routeLabel(d)),
-      open.length > 0 && h("ul", { class: "plain" }, open.map((r) => h("li", {},
+      h("p", { class: "meta" }, who("human", "Humans decide"), " Only a TA or professor can act."),
+      open.length > 0 && h("ul", { class: "plain", style: "margin-top:12px" }, open.map((r) => h("li", {},
         h("div", {}, r.title), h("div", { class: "meta" }, `Route: ${r.route_to}`, " ", chips(r.evidence_ids, d))))),
       a.warnings.length > 0 && h("div", { class: "flags" }, h("h3", {}, "Flags"),
         h("ul", { class: "plain" }, a.warnings.map((w) => h("li", { class: "flag" }, w.text, " ", chips(w.evidence_ids, d))))),
-      h("div", { class: "meta" }, closed ? "Status: " : "Next: ", h("strong", {}, nextStep(d.case))),
+      h("div", { class: "meta", style: "margin-top:12px" }, closed ? "Status: " : "Next: ", h("strong", {}, nextStep(d.case))),
       cta));
 
   return h("div", { class: "page" },
     noticeEl(),
     caseHeader(d, "evidence"),
-    h("section", { class: "summary" }, h("h2", {}, "What the records show"), h("p", { class: "lead" }, factSummary(d))),
+    h("section", { class: "summary" }, h("h2", {}, "What the records show", who("rules", "Computed by rules, not AI")), h("p", { class: "lead" }, factSummary(d))),
     h("div", { class: "cols" },
       h("div", { class: "colmain" },
-        aiBlock(d), messagesSection(d), submissionSection(d), scoreSection(d), policySection(d), auditSection(d)),
+        aiCard(d), messagesSection(d), submissionSection(d), scoreSection(d), policySection(d), auditSection(d)),
       aside));
 }
 
@@ -496,27 +765,30 @@ function submissionSection(d) {
   nodes.sort((x, y) => Date.parse(x.ts) - Date.parse(y.ts));
   const stateText = { unreadable: "Unreadable file", empty_file: "Empty file", alternate_evidence: "Alternate evidence, not a Canvas submission" };
   const sub = d.evidence.find((e) => e.source_type === "submission_status");
+  const time = (ts) => h("div", { class: "tltime" }, h("div", { class: "clock" }, ts.slice(11, 16)), h("div", { class: "tldate" }, fmt(ts).split(",")[0]));
   const items = nodes.map((n) => {
     if (n.kind === "deadline") {
-      return h("li", { class: "tl deadline" }, h("div", { class: "tltime" }, h("div", { class: "clock" }, n.ts.slice(11, 16)), h("div", { class: "meta" }, fmt(n.ts).split(",")[0])),
-        h("div", { class: "tlbody" }, h("strong", {}, "Deadline"), " ", idChip(dl.ref_id, d), h("div", { class: "meta" }, "Anything after this line is late under the policy.")));
+      return h("li", { class: "tl deadline" }, time(n.ts), h("div", { class: "tlrail" }, h("span", { class: "tlmark" })),
+        h("div", { class: "tlbody" }, h("div", { class: "tltitle" }, h("strong", {}, "Deadline"), idChip(dl.ref_id, d)),
+          h("div", { class: "meta" }, "Anything after this line is late under the policy."), h("div", { class: "dashline" })));
     }
     const t = n.t;
     const cls = t.state !== "submitted" ? "problem" : t.late ? "late" : "ontime";
-    return h("li", { class: `tl attempt ${cls}` },
-      h("div", { class: "tltime" }, h("div", { class: "clock" }, t.ts.slice(11, 16)), h("div", { class: "meta" }, fmt(t.ts).split(",")[0])),
+    return h("li", { class: `tl attempt ${cls}` }, time(t.ts), h("div", { class: "tlrail" }, h("span", { class: "tlmark" })),
       h("div", { class: "tlbody" },
-        h("div", {}, h("strong", {}, `Attempt ${a.attempts.indexOf(t) + 1}`), " ", idChip(t.ref_id, d), " ",
-          t.state === "submitted" ? h("span", { class: `badge ${t.late ? "warn" : "ok"}` }, t.late ? "Late" : "On time") : h("span", { class: "badge warn" }, stateText[t.state] || t.state),
-          t.counted && h("span", { class: "badge" }, "Graded attempt")),
+        h("div", { class: "tltitle" }, h("strong", {}, `Attempt ${a.attempts.indexOf(t) + 1}`), idChip(t.ref_id, d),
+          t.state === "submitted" ? h("span", { class: `badge ${t.late ? "bad" : "ok"}`, style: "margin-left:0" }, t.late ? "LATE" : "ON TIME")
+            : h("span", { class: "badge warn", style: "margin-left:0" }, stateText[t.state] || t.state),
+          t.counted && h("span", { class: "badge", style: "margin-left:0" }, "graded")),
         t.state === "submitted" && h("div", { class: "meta" }, mins(t)), t.file && h("div", { class: "meta mono" }, t.file)));
   });
   if (!a.attempts.length) {
     items.push(h("li", { class: "tl attempt problem" }, h("div", { class: "tltime" }, h("div", { class: "clock" }, "--:--")),
-      h("div", { class: "tlbody" }, h("strong", {}, "No submission recorded"), " ", sub && idChip(sub.ref_id, d),
+      h("div", { class: "tlrail" }, h("span", { class: "tlmark" })),
+      h("div", { class: "tlbody" }, h("div", { class: "tltitle" }, h("strong", {}, "No submission recorded"), sub && idChip(sub.ref_id, d)),
         h("div", { class: "meta" }, "Canvas shows no file for this assignment."))));
   }
-  return h("section", { class: "block" }, h("h2", {}, "Submission vs deadline"), h("ol", { class: "timeline" }, items));
+  return h("section", { class: "block" }, h("h2", {}, "Submission vs deadline", who("rules", "Computed by rules")), h("ol", { class: "timeline" }, items));
 }
 
 function stat(label, value, note, emphasis) {
@@ -593,6 +865,9 @@ function auditSection(d) {
 
 // ------------------------------------------------------------------ decision screen
 
+
+// ------------------------------------------------------------------ decision screen
+
 const ACTION_ORDER = ["approve", "hold", "escalate", "request_info", "reject"];
 
 function choosePrimary(role, perms, a, d, hasDraft) {
@@ -623,26 +898,13 @@ function analysisStatus(d) {
   }
   const t = run.total_tokens ? `, ${run.total_tokens} tokens` : "";
   switch (run.outcome) {
-    case "accepted": return { kind: "ok", text: `Live AI succeeded: ${run.model}, ${run.latency_ms} ms${t}. The reply passed validation against the records.${stale}` };
+    case "accepted": return { kind: "ok", text: `Live AI succeeded: ${run.model}, ${run.latency_ms} ms${t}. The reply passed the guardrails.${stale}` };
     case "mock": return { kind: "info", text: `Mock analysis only: a deterministic template ran locally and no AI model was called.${stale}` };
     case "rules-only": return { kind: "info", text: `Rules-only draft: no model was called. This text is not AI output.${stale}` };
-    case "rejected": return { kind: "warn", text: `Live AI replied, but the answer failed validation and was rejected (${(run.validation.flags || []).length} problem(s)). The draft below is a rules-only template, not AI output.${stale}` };
+    case "rejected": return { kind: "warn", text: `Live AI replied, but the answer failed the guardrails and was rejected (${(run.validation.flags || []).length} problem(s)). The draft below is a rules-only template, not AI output.${stale}` };
     case "error": return { kind: "warn", text: `Live AI call failed: ${run.error_message || "unknown error"} The draft below is a rules-only template, not AI output.${stale}` };
     default: return { kind: "info", text: "An analysis is in progress." };
   }
-}
-
-const STAGE_WORD = { done: "Done", skipped: "Skipped", failed: "Failed", pending: "Waiting", running: "Running" };
-
-function stagesList(run) {
-  return h("div", {},
-    h("p", { class: "meta" }, `Run #${run.id}, ${run.mode}, started ${fmt(run.started_at, true)}`,
-      run.provider && run.mode === "live" ? `, ${run.provider}` : "", run.model && run.mode === "live" ? ` / ${run.model}` : "",
-      run.attempts ? `, ${plural(run.attempts, "provider attempt")}` : ""),
-    h("ol", { class: "stages" }, run.stages.map((s) => h("li", { class: `stage st-${s.status}` },
-      h("span", { class: "stword" }, STAGE_WORD[s.status] || s.status), " ", h("strong", {}, s.label),
-      s.duration_ms != null && s.status !== "pending" && h("span", { class: "meta" }, ` ${s.duration_ms} ms`),
-      s.detail && h("div", { class: "meta" }, s.detail)))));
 }
 
 function analysisPanel(d, closed) {
@@ -651,20 +913,16 @@ function analysisPanel(d, closed) {
   const off = closed ? "This case is closed." : S.busy ? "An analysis is already running." : "";
   const liveBlocked = live && (ai.mode === "misconfigured" ? "Live AI is not usable until a model id is configured on the server."
     : b && b.exhausted ? "The lifetime AI budget is used up. Use the rules-only draft." : "");
-  const runLabel = wf.current_valid ? "Regenerate analysis" : "Run analysis";
-  const run = (rules) => (e) => runAnalysis({ force: !rules && wf.current_valid, rules_only: rules }, e.currentTarget);
   return h("div", { class: "aipanel" },
     h("div", { class: `notice ${st.kind === "ok" ? "success" : st.kind === "warn" ? "warn" : "info"}` }, st.text),
     live && b && h("p", { class: "meta" }, `Lifetime AI calls: ${b.calls_used} of ${b.calls_limit} used. Each run uses one; a retry (${b.max_retries ? "enabled" : "disabled"}) would use another. Prompts are capped at ${b.max_prompt_bytes} bytes and replies at ${b.max_completion_tokens} tokens.`),
-    !closed && h("div", { class: "btnrow" },
-      h("button", { type: "button", class: "btn primary", id: "run-analysis", disabled: !!(off || liveBlocked), "aria-describedby": "run-why", onclick: run(false) }, runLabel),
-      h("button", { type: "button", class: "btn", id: "run-rules", disabled: !!off, onclick: run(true) }, "Create rules-only draft (no AI)")),
+    !closed && h("div", { class: "btnrow" }, runButtons(d)),
     !closed && h("div", { id: "ai-err", role: "alert" }),
     !closed && h("p", { class: "meta", id: "run-why" }, off || liveBlocked || (live ? "Uses one lifetime AI call. A valid analysis is reused until the evidence changes." : "Free: mock mode makes no model call.")),
-    wf.latest && stagesList(wf.latest),
+    h("div", { class: "pipeline-slot" }, wf.latest && pipelineView(wf.latest, d, S.animateRun === wf.latest.id)),
     wf.rejected && h("details", { class: "more" }, h("summary", {}, "Rejected AI output (kept for audit, never used)"),
       (wf.rejected.flags || []).map(flagEl), wf.rejected.reply && h("blockquote", {}, wf.rejected.reply)),
-    h("p", { class: "meta" }, "Validation checks that citations exist and that numbers, times and promise wording match the records. It cannot prove every statement is correct, so a person must read the reply before approving."));
+    h("p", { class: "meta" }, "The guardrails check citations, numbers, times and promise wording. They cannot prove every statement is correct, so a person must read the reply before approving."));
 }
 
 function decisionView() {
@@ -674,14 +932,15 @@ function decisionView() {
   const waitingProf = d.case.status === "Awaiting professor";
   const primary = choosePrimary(role, perms, a, d, !!dr);
   const attemptItem = d.review_items.some((r) => r.kind === "attempt_basis" && r.status === "open");
+  const step2Done = () => S.ui.note.trim().length > 0 && (!attemptItem || role !== "professor" || !!S.ui.counted);
 
   const noteErr = h("p", { class: "fielderr", id: "note-err", role: "alert" });
   const countedErr = h("p", { class: "fielderr", id: "counted-err", role: "alert" });
   const formErr = h("div", { id: "form-err", role: "alert" });
   const note = h("textarea", { id: "note", class: "input", rows: 3, "aria-describedby": "note-err note-help",
-    oninput: (e) => { S.ui.note = e.target.value; noteErr.textContent = ""; } }, S.ui.note);
+    oninput: (e) => { S.ui.note = e.target.value; noteErr.textContent = ""; refreshSteps(); } }, S.ui.note);
   const counted = h("select", { id: "counted", class: "input", disabled: role !== "professor", "aria-describedby": "counted-err counted-help",
-    onchange: (e) => { S.ui.counted = e.target.value; countedErr.textContent = ""; } },
+    onchange: (e) => { S.ui.counted = e.target.value; countedErr.textContent = ""; refreshSteps(); } },
     h("option", { value: "" }, "Select an attempt"),
     a.attempts.filter((t) => t.state === "submitted").map((t) => h("option", { value: t.ref_id, selected: S.ui.counted === t.ref_id }, `${t.ref_id}: ${fmt(t.ts)}, ${mins(t)}`)));
 
@@ -703,14 +962,15 @@ function decisionView() {
       }, 400);
     } }, S.ui.body ?? storedBody(dr));
 
+  const whys = [];
   const mk = (action, isPrimary) => {
     const why = actionReason(action, perms, !!dr);
     const rid = `why-${action}`;
-    const btn = h("button", { type: "button", class: `btn ${isPrimary ? "primary big" : action === "reject" ? "danger" : ""}`, "data-action": action,
-      disabled: !!why, "aria-describedby": why ? rid : null, onclick: (e) => submit(action, e.currentTarget) }, actionLabel(action, role));
-    return h("div", { class: `act ${isPrimary ? "primary" : ""}` }, btn,
-      h("div", { class: "meta" }, `Moves to: ${perms[action].next_status}`),
-      why && h("div", { class: "why", id: rid }, why));
+    if (why) whys.push(h("div", { class: "why", id: rid }, `${actionLabel(action, role)}: ${why}`));
+    const btn = h("button", { type: "button", class: `btn ${isPrimary ? "primary big" : action === "reject" ? "danger small" : "small"}`, "data-action": action,
+      disabled: !!why, title: why || null, "aria-describedby": why ? rid : null, onclick: (e) => submit(action, e.currentTarget) },
+      actionLabel(action, role), isPrimary && icon("arrow"));
+    return h("div", { class: `act ${isPrimary ? "primary" : ""}` }, btn, h("div", { class: "meta" }, `Moves to: ${perms[action].next_status}`));
   };
   const actions = [];
   if (!closed) {
@@ -719,9 +979,11 @@ function decisionView() {
     } else if (!primary && !dr) {
       actions.push(h("div", { class: "notice info" }, "Run the analysis in step 3 first. The recommended action appears once there is a reply to review."));
     }
-    if (primary) actions.push(mk(primary, true));
+    if (primary) actions.push(h("div", { class: "actions" }, mk(primary, true)));
     const others = ACTION_ORDER.filter((x) => x !== primary);
-    actions.push(h("div", { class: "others" }, h("div", { class: "label" }, primary ? "Other actions" : "Actions"), others.map((x) => mk(x, false))));
+    const otherEls = others.map((x) => mk(x, false));
+    actions.push(h("div", { class: "others" }, h("div", { class: "label" }, primary ? "Other actions" : "Actions"),
+      h("div", { class: "row" }, otherEls), whys.length > 0 && h("div", { class: "whylist" }, whys)));
   }
 
   const sc = d.score_control;
@@ -729,51 +991,71 @@ function decisionView() {
     : !a.score_change ? "The approved basis gives the same score as the gradebook; nothing to record." : "";
   const scBtn = h("button", { type: "button", class: "btn", disabled: !sc.enabled, "aria-describedby": "sc-why", onclick: (e) => recordScore(e.currentTarget) }, "Record score recommendation");
 
-  const steps = [];
-  steps.push({ title: "Review evidence and the recommended action", body: [
+  // ---- numbered step cards: the active one has a brand border, finished ones a check
+  const defs = [];
+  const step = (title, tag, bodyNodes, isDone) => {
+    const num = h("span", { class: "stepno" }, String(defs.length + 1));
+    const li = h("li", { class: "step" }, h("h2", {}, num, title, tag), bodyNodes);
+    defs.push({ li, num, isDone, n: defs.length + 1 });
+    return li;
+  };
+  step("Review evidence and the recommended action", who("rules", "Computed by rules"), [
     h("p", { class: "lead" }, factSummary(d)),
     h("p", {}, h("strong", {}, routeLabel(d)), closed ? "." : [". Rules suggest: ", h("strong", {}, nextStep({ ...d.case, status: "New" })), "."]),
-    !closed && h("ul", { class: "plain" }, a.reasons.map((r) => h("li", {}, r))),
+    !closed && h("ul", { class: "plain", style: "margin-top:8px" }, a.reasons.map((r) => h("li", {}, r))),
     !closed && h("p", { class: "meta" }, "Uncertainty: " + (a.uncertainty.join(" ") || "none identified by the rules.")),
-    h("a", { href: `#/case/${d.case.id}/evidence` }, "Open the full evidence")] });
+    h("a", { href: `#/case/${d.case.id}/evidence` }, "Open the full evidence")], () => true);
   if (!closed) {
-    steps.push({ title: "Choose the attempt and add a note", body: [
+    step("Choose the attempt and add a note", who("human", "Humans decide"), [
       attemptItem ? h("div", { class: "formrow" }, h("label", { for: "counted" }, "Attempt that counts as the submission"), counted,
         h("p", { class: "meta", id: "counted-help" }, role === "professor" ? "Required to approve. This is the professor's call." : "Only the professor chooses which attempt counts. Switch the demo role to try it."), countedErr)
         : h("p", { class: "meta" }, "No attempt choice is needed for this case."),
       h("div", { class: "formrow" }, h("label", { for: "note" }, "Note for the decision log"), note,
-        h("p", { class: "meta", id: "note-help" }, "Required for every action except Approve. Stored with your name, role and time."), noteErr)] });
+        h("p", { class: "meta", id: "note-help" }, "Required for every action except Approve. Stored with your name, role and time."), noteErr)], step2Done);
   }
-  steps.push({ title: closed ? "Analysis and approved reply" : "Run the analysis and review the reply", body: [
+  step(closed ? "Analysis and approved reply" : "Run the analysis and review the reply", who(dr && dr.source === "llm" ? "ai" : "template", dr && dr.source === "llm" ? "AI explains" : "Template, not AI"), [
     analysisPanel(d, closed),
-    h("div", { class: "draftmeta" }, h("span", { class: "drafttag" }, "Draft only - not sent"), dirtyNote),
+    h("div", { class: "draftmeta" }, h("span", { class: "drafttag" }, "Draft only — not sent"), dirtyNote),
     h("p", { class: "meta" }, provenance(d)),
     dr ? [h("label", { for: "body", class: "label" }, approved ? "Approved reply (draft, not sent)" : "Reply to student (editable draft)"), body, flagBox]
        : h("p", { class: "muted" }, "There is no reply draft yet."),
     dr && !readonly && h("div", { class: "btnrow" }, h("button", { type: "button", class: "btn", onclick: (e) => saveDraft(e.currentTarget) }, "Save edits")),
-    dr && dr.flags.length > 0 && h("div", {}, h("h3", {}, "Guardrail flags"), dr.flags.map(flagEl)),
-    dr && claimBlock("Verified facts (each cites a record)", dr.verified, d), dr && claimBlock("Unverified (not confirmed by the records)", dr.unverified, d)] });
-  steps.push({ title: closed ? "Decision and score recommendation" : "Record the decision", body: [
+    dr && dr.flags.length > 0 && h("div", {}, h("h3", { style: "margin-top:14px" }, "Guardrail flags"), dr.flags.map(flagEl)),
+    dr && claimDetails("Verified facts", "verified", dr.verified, d), dr && claimDetails("Unverified", "unverified", dr.unverified, d)],
+    () => closed || approved || (!!dr && d.workflow.current_valid));
+  step(closed ? "Decision and score recommendation" : "Record the decision", who("human", "Humans decide"), [
     !closed && h("p", { class: "meta" }, `Acting as ${role === "ta" ? "TA" : "Professor"} (demo role). Recording a decision changes this case's status and writes a log entry. Nothing is sent and nothing changes in Canvas.`),
     !closed && formErr, actions,
-    h("div", { class: "scorebox" }, h("h3", {}, "Score recommendation"),
+    h("div", { class: "scorebox" }, h("h3", { style: "margin:0 0 4px" }, "Score recommendation"),
       h("p", { class: "meta" }, "A professor approval authorises a recommendation only. Recording it saves a note inside GradeCase. Entering a grade in Canvas is a separate step staff do outside this tool; GradeCase never writes to Canvas."),
       scBtn, h("p", { class: "meta", id: "sc-why" }, scReason),
-      a.score_change && !sc.recorded && h("p", {}, `Approved basis would recommend ${num(a.score_change.from)} → ${num(a.score_change.to)}.`))] });
+      a.score_change && !sc.recorded && h("p", {}, `Approved basis would recommend ${num(a.score_change.from)} → ${num(a.score_change.to)}.`))], () => closed);
+
+  function refreshSteps() {
+    let active = -1;
+    defs.forEach((s, i) => { s.done = closed || s.isDone(); if (!s.done && active < 0) active = i; });
+    defs.forEach((s, i) => {
+      s.li.classList.toggle("done", s.done);
+      s.li.classList.toggle("active", !closed && i === active);
+      s.num.replaceChildren(...(s.done ? [icon("check")] : [String(s.n)]));
+      if (s.done) s.num.setAttribute("aria-label", "completed"); else s.num.removeAttribute("aria-label");
+    });
+  }
+  S.decisionSteps = refreshSteps;
 
   return h("div", { class: "page" },
     noticeEl(),
     caseHeader(d, "decision"),
     closed && h("div", { class: "notice info" }, "This case is closed. The decision and the approved reply are shown for the record; nothing here can be edited."),
-    h("ol", { class: "flow" }, steps.map((s, i) => h("li", { class: "step" },
-      h("h2", {}, h("span", { class: "stepno" }, String(i + 1)), s.title), s.body))),
+    h("ol", { class: "flow" }, defs.map((s) => s.li)),
     logSection(d));
 }
+const refreshSteps = () => { if (S.decisionSteps) S.decisionSteps(); };
 
 function provenance(d) {
   const dr = d.draft;
   if (!dr) return "No draft yet.";
-  if (dr.source === "llm") return `Drafted by the live model (${d.workflow.latest ? d.workflow.latest.model : "unknown"}) and validated against the records. It is still only a draft: a person must read it.`;
+  if (dr.source === "llm") return `Drafted by the live model (${d.workflow.latest ? d.workflow.latest.model : "unknown"}) and checked by the guardrails. It is still only a draft: a person must read it.`;
   if (dr.source === "mock") return "Template draft built from the computed records. Mock mode: no AI model was called.";
   if (dr.ai_status === "unavailable") return "Rules-only template. The AI reply was unavailable or rejected, so this text is NOT AI output.";
   return "Rules-only template you requested. This text is NOT AI output.";
@@ -781,15 +1063,15 @@ function provenance(d) {
 
 const flagEl = (f) => h("div", { class: "flag" }, f.message, f.code_value != null && h("strong", {}, ` Code value: ${f.code_value}`));
 
-function claimBlock(title, claims, d) {
+function claimDetails(title, kind, claims, d) {
   return h("details", { class: "more" }, h("summary", {}, `${title} (${claims.length})`),
-    claims.length ? h("ul", { class: "plain" }, claims.map((c) => h("li", {}, c.text, " ", chips(c.evidence_ids, d),
-      (c.flags || []).filter((f) => f.kind === "needs_verification").map((f) => h("span", { class: "badge warn" }, `Needs verification (code: ${f.code_value})`)))))
-      : h("p", { class: "meta" }, "None."));
+    claims.length ? h("ul", { class: "stmts" }, claims.map((c) => h("li", { class: `stmt${kind === "verified" ? "" : " unverified"}` },
+      h("span", {}, c.text, (c.flags || []).filter((f) => f.kind === "needs_verification").map((f) => h("span", { class: "badge bad" }, `needs verification (code: ${f.code_value})`))),
+      h("span", { class: "ids" }, chips(c.evidence_ids, d))))) : h("p", { class: "meta" }, "None."));
 }
 
 function logSection(d) {
-  return h("section", { class: "block" }, h("h2", {}, "Decision log"),
+  return h("section", { class: "block" }, h("h2", {}, "Decision log", who("human", "Humans decide")),
     d.decisions.length ? h("ul", { class: "activity" }, [...d.decisions].reverse().map((x) => h("li", {},
       h("div", {}, h("strong", {}, x.actor), ` (${x.role}) `, x.action.replace(/_/g, " "),
         x.from_status && x.from_status !== x.to_status && ` · ${x.from_status} → ${x.to_status}`),
@@ -807,21 +1089,28 @@ async function runAnalysis(opts, btn) {
   }
   S.busy = true;
   const done = setBusy(btn, live ? "Calling AI..." : "Working...");
+  // While the request is in flight, show the pipeline running. Nothing is marked done until the
+  // server returns the real stages.
+  const slots = [...document.querySelectorAll(".pipeline-slot")];
+  const saved = slots.map((s) => [...s.childNodes]);
+  if (!opts.rules_only) slots.forEach((s) => s.replaceChildren(pipelineRunning(live)));
   try {
     const out = await api(`/api/cases/${S.detail.case.id}/analysis`, { method: "POST", body: opts });
     S.detail = out;
     S.ui.body = null;
+    S.animateRun = out.workflow.latest ? out.workflow.latest.id : null;
     const ai = out.ai;
     S.notice = ({
-      succeeded: { kind: "success", title: "AI analysis succeeded.", text: "It passed validation against the records. Read the reply before deciding." },
+      succeeded: { kind: "success", title: "AI analysis succeeded.", text: "It passed the guardrails. Read the reply before deciding." },
       mock: { kind: "info", title: "Mock analysis finished.", text: "No AI model was called." },
       cached: { kind: "info", title: "Analysis reused.", text: ai.message },
       rules_only: { kind: "info", title: "Rules-only draft created.", text: "No model was called; this text is not AI output." },
-      rejected: { kind: "error", title: "AI reply rejected.", text: `${ai.message} A rules-only draft was prepared instead.` },
+      rejected: { kind: "error", title: "AI reply rejected by the guardrails.", text: `${ai.message} A rules-only draft was prepared instead.` },
       error: { kind: "error", title: "AI call failed.", text: `${ai.message} A rules-only draft was prepared instead.` },
     })[ai.status] || { kind: "info", title: "Done.", text: "" };
   } catch (e) {
     done();
+    slots.forEach((s, i) => s.replaceChildren(...saved[i]));
     showErr(e.message, "ai-err");
     S.busy = false;
     await refreshAi();
@@ -829,10 +1118,9 @@ async function runAnalysis(opts, btn) {
   }
   S.busy = false;
   await refreshAi();
-  render();
+  await render();
+  S.animateRun = null;
 }
-
-// ------------------------------------------------------------------ decision actions
 
 function setBusy(btn, text) {
   const all = [...document.querySelectorAll(".act button, .btnrow button, .scorebox button")];
@@ -936,6 +1224,8 @@ async function intakeView() {
   const student = textIn("student", "S-4B21");
   const assignment = textIn("assignment", "HW6");
   const courseIn = textIn("course", "DEMO 3060");
+  const issue = h("select", { class: "input" }, [["", "Auto-detect from the message"], ["late_flag", "Late flag"], ["score_gap", "Score gap"],
+    ["missing_submission", "Missing submission"], ["other", "Other"]].map(([v, t]) => h("option", { value: v }, t)));
   let uploadSource = null; // "screenshot" | "document" when the form was pre-filled from an upload
   const msgTs = h("input", { type: "datetime-local", class: "input" });
   const msgText = h("textarea", { class: "input", rows: 4, maxlength: 2000, placeholder: "I submitted on time but it shows late." });
@@ -990,7 +1280,7 @@ async function intakeView() {
   function toggleMode() {
     const isNew = mode.value === "new";
     ctxBox.hidden = !isNew; existingRow.hidden = isNew; studentRow.hidden = !isNew; assignRow.hidden = !isNew; courseRow.hidden = !isNew;
-    ownerRow.hidden = !isNew; dirRow.hidden = isNew; staffRow.hidden = isNew || direction.value !== "outbound";
+    ownerRow.hidden = !isNew; issueRow.hidden = !isNew; dirRow.hidden = isNew; staffRow.hidden = isNew || direction.value !== "outbound";
   }
   direction.addEventListener("change", () => { staffRow.hidden = direction.value !== "outbound"; });
 
@@ -998,13 +1288,14 @@ async function intakeView() {
   const studentRow = fieldRow("Student pseudo-ID", student, "Format S- plus 4 to 8 hex characters. Never a real name or number.", "student");
   const assignRow = fieldRow("Assignment ID", assignment, "Letters and digits, e.g. HW6.", "assignment");
   const courseRow = fieldRow("Course (optional)", courseIn, "Leave empty to use the demo course.", "course");
+  const issueRow = fieldRow("Issue type", issue, "Detected from the message unless you choose one.", "issue");
   const ownerRow = fieldRow("Owner (optional)", owner, null, "owner");
   const dirRow = fieldRow("Message type", direction, null, "message.direction");
   const staffRow = fieldRow("Staff author", staff, null, "message.author");
 
   function fill(req) {
     uploadSource = null; visionResult.replaceChildren();
-    mode.value = "new"; toggleMode(); courseIn.value = req.course || "";
+    mode.value = "new"; toggleMode(); courseIn.value = req.course || ""; issue.value = req.issue || "";
     student.value = req.student; assignment.value = req.assignment;
     channel.value = req.message.channel; msgText.value = req.message.text;
     const local = (ts) => ts.slice(0, 16);
@@ -1032,6 +1323,7 @@ async function intakeView() {
       if (owner.value) req.owner = owner.value;
       if (courseIn.value.trim()) req.course = courseIn.value.trim();
       if (uploadSource) req.source = uploadSource;
+      if (issue.value) req.issue = issue.value;
       req.context = {
         assignment_name: ctxName.value.trim(), deadline: iso(ctxDeadline.value), max_points: numOrNull(ctxPoints),
         policy_ref: ctxPolicy.value,
@@ -1075,9 +1367,12 @@ async function intakeView() {
   const fileIn = h("input", { type: "file", id: "f-shot", accept: "image/png,image/jpeg,image/webp,application/pdf,.pdf,.docx,.txt,.csv,.tsv,.md,.eml,text/plain,text/csv", class: "sr-only" });
   const preview = h("div", { class: "preview" });
   const visionAck = h("input", { type: "checkbox", id: "f-vision-ack" });
-  const dropText = h("span", {}, "Drop screenshot, PDF, or document here, or choose a file (PNG, JPEG, WebP, PDF, DOCX, TXT or CSV, up to 5 MiB)");
-  const readBtn = h("button", { type: "button", class: "btn primary", id: "read-shot", disabled: true }, "Read file");
-  const drop = h("label", { class: "drop", for: "f-shot" }, dropText);
+  const fileInfo = h("div", { class: "fileinfo", hidden: true });
+  const readLabel = S.cfg.ai_mode === "mock" ? "Extract sample values (mock mode)" : "Extract with AI";
+  const readBtn = h("button", { type: "button", class: "btn primary", id: "read-shot", disabled: true }, readLabel);
+  const drop = h("label", { class: "drop", for: "f-shot" }, icon("file"),
+    h("strong", {}, "Drop a screenshot, PDF, or document"), h("span", { class: "formats" }, "PNG, JPG, PDF, DOCX, CSV \u2014 up to 5 MB"),
+    h("span", { class: "btn" }, "Browse files"));
   const MAX_IMG = 5 * 1024 * 1024;
   const canRead = () => { readBtn.disabled = !(fileIn.files && fileIn.files[0] && visionAck.checked) || S.busy; };
   const toLocal = (ts, off) => { // express a timestamp in the form's chosen offset
@@ -1088,6 +1383,8 @@ async function intakeView() {
   function fillFromExtraction(ex, kind) {
     uploadSource = kind === "image" ? "screenshot" : "document";
     mode.value = "new"; toggleMode();
+    issue.value = ["late_flag", "score_gap", "missing_submission"].includes(ex.issue_type) ? ex.issue_type : "";
+    extracted = true; setTab("upload");
     const first = ex.message_time || ex.deadline || ex.submission_time;
     const off = first ? first.slice(-6) : "-07:00";
     if (![...offset.options].some((o) => o.value === off)) offset.append(h("option", { value: off }, `UTC${off}`));
@@ -1134,11 +1431,14 @@ async function intakeView() {
       visionResult.replaceChildren(h("div", { class: "notice error", role: "alert" }, `Could not reach the server: ${e.message}`));
     } finally { S.busy = false; readBtn.textContent = old; canRead(); await refreshAi(); }
   }
+  const sizeText = (n) => (n < 1048576 ? `${Math.max(1, Math.round(n / 1024))} KB` : `${(n / 1048576).toFixed(1)} MB`);
   function onFile() {
-    preview.replaceChildren();
+    preview.replaceChildren(); fileInfo.replaceChildren();
     const f = fileIn.files && fileIn.files[0];
+    fileInfo.hidden = !f;
     if (f) {
-      dropText.textContent = `${f.name} (${Math.max(1, Math.round(f.size / 1024))} KiB)`;
+      const ext = (f.name.includes(".") ? f.name.split(".").pop() : "file").toUpperCase();
+      fileInfo.append(h("span", { class: "name" }, f.name), h("span", { class: "meta" }, sizeText(f.size)), h("span", { class: "badge", style: "margin-left:0" }, ext));
       if (/^image\//.test(f.type)) preview.append(h("img", { src: URL.createObjectURL(f), alt: "Preview of the selected screenshot" }));
       else preview.append(h("p", { class: "meta" }, "No preview for documents. The text is read on the server."));
     }
@@ -1154,7 +1454,7 @@ async function intakeView() {
     h("p", { class: "meta" }, S.cfg.ai_mode === "mock"
       ? "Mock mode: files are read locally but no AI model analyses them. You get clearly labelled sample values to replace."
       : "Upload a screenshot of an email or Canvas page, a PDF, a Word file, or a text or CSV export. Images go to the vision model; documents are read on the server and their text goes to the text model. You review and edit everything before a case is created. It uses one lifetime AI call. A CSV or PDF with several students yields only the first case."),
-    drop, fileIn, preview,
+    drop, fileIn, fileInfo, preview,
     h("label", { class: "check" }, visionAck, " This file contains only synthetic data: no real student names, emails, grades or IDs."),
     h("div", { class: "btnrow" }, readBtn), visionResult);
 
@@ -1181,12 +1481,11 @@ async function intakeView() {
   } },
     summary,
     h("div", { class: "notice warn" }, h("strong", {}, "Synthetic data only. "), "Do not type real student names, emails, phone numbers, links or ID numbers: they are rejected. Nothing is sent to Canvas or email, and the demo cases A to D use built-in records, not this form."),
-    visionBox,
-    h("h2", {}, "Case details"),
+    h("h2", {}, "Review the case details"),
     examples.length > 0 && h("div", { class: "btnrow examples" }, h("span", { class: "meta" }, "Load an example:"),
       examples.map((x) => h("button", { type: "button", class: "btn", onclick: () => fill(x.request) }, x.title.split(":")[0]))),
     fieldRow("What are you adding?", mode, null, "mode"),
-    existingRow, studentRow, assignRow, courseRow, ownerRow,
+    existingRow, studentRow, assignRow, courseRow, issueRow, ownerRow,
     fieldRow("Channel", channel, null, "message.channel"),
     dirRow, staffRow,
     fieldRow("Message time", msgTs, "Uses the time zone below.", "message.ts"),
@@ -1197,8 +1496,25 @@ async function intakeView() {
       h("p", { class: "fielderr", "data-err-for": "synthetic_ack", role: "alert" })),
     h("div", { class: "btnrow" }, submitBtn, h("a", { class: "btn", href: "#/queue" }, "Cancel")));
 
-  const view = h("div", { class: "page" }, h("h1", {}, "New synthetic case"),
-    h("p", { class: "lede" }, "Enter a message and the records behind it. The rules check them straight away, and the usual duplicate, evidence and decision steps follow."), form);
+  // Two ways in: read a file with the AI model, or type it in. Both end at the same review form.
+  let tab = "upload", extracted = false;
+  const tabUpload = h("button", { type: "button", role: "tab", id: "tab-upload", onclick: () => setTab("upload") }, "Upload file");
+  const tabManual = h("button", { type: "button", role: "tab", id: "tab-manual", onclick: () => setTab("manual") }, "Manual entry");
+  const skip = h("p", { class: "meta", id: "skip-upload" }, "No file? ", h("button", { type: "button", class: "linkbtn", onclick: () => setTab("manual") }, "Enter the details by hand"), ".");
+  function setTab(t) {
+    tab = t;
+    tabUpload.setAttribute("aria-selected", String(t === "upload")); tabManual.setAttribute("aria-selected", String(t === "manual"));
+    visionBox.hidden = t !== "upload";
+    skip.hidden = t !== "upload" || extracted;
+    form.hidden = t === "upload" && !extracted;
+    examplesRow.hidden = t !== "manual";
+  }
+  const examplesRow = form.querySelector(".examples");
+  const view = h("div", { class: "page" }, h("h1", { class: "page-title" }, "New synthetic case"),
+    h("p", { class: "lede" }, "Add a case from a screenshot, PDF or document, or type it in. The rules check the records straight away, and the usual duplicate, evidence and decision steps follow."),
+    h("div", { class: "modetabs", role: "tablist", "aria-label": "How to add the case" }, tabUpload, tabManual),
+    visionBox, skip, form);
+  setTab("upload");
   existing.addEventListener("change", () => {});
   toggleMode();
   return view;
@@ -1232,7 +1548,7 @@ async function boardView() {
     const items = cases.filter((c) => c.status === status);
     const list = h("div", { class: "kcards" }, items.map(boardCard), !items.length && h("p", { class: "meta kempty" }, "No cases"));
     const col = h("section", { class: "kcol", "data-status": status, "aria-labelledby": `kh-${slug(status)}` },
-      h("h2", { id: `kh-${slug(status)}` }, status, " ", h("span", { class: "tabcount", "aria-label": `${items.length} cases` }, items.length)),
+      h("h2", { id: `kh-${slug(status)}` }, h("span", {}, status), h("span", { class: "tabcount", "aria-label": `${items.length} cases` }, items.length)),
       list);
     col.addEventListener("dragover", (e) => {
       const c = S.drag && cases.find((x) => x.id === S.drag);
@@ -1247,25 +1563,30 @@ async function boardView() {
     return col;
   });
   return h("div", { class: "page" }, noticeEl(),
-    h("div", { class: "pagehead" }, h("h1", {}, "Board"), h("a", { class: "btn", href: "#/queue" }, "Open the list view")),
-    h("p", { class: "lede" }, "Drag a card to a column, or use its Move menu. Every move is recorded as a decision with your note, and the usual rules still apply. Nothing is sent and no grade changes."),
+    h("div", { class: "pagehead" }, h("h1", { class: "page-title" }, "Board"), h("a", { class: "btn", href: "#/queue" }, "Open the list view")),
+    h("p", { class: "lede" }, "Drag a card to a column, or use its ⋮ menu. Every move is recorded as a decision with your note, and the usual rules still apply. Nothing is sent and no grade changes."),
     h("ul", { class: "legend" }, Object.keys(ISSUE_LABEL).map((k) => h("li", {}, h("span", { class: `swatch i-${k}` }), ISSUE_LABEL[k]))),
-    h("div", { class: "board" }, cols));
+    h("div", { class: "board board-cols" }, cols));
 }
 
 function boardCard(c) {
   const targets = BOARD_COLS.filter((s) => canDropOn(c, s));
-  const sel = canLeave(c) ? h("label", { class: "move" }, h("span", { class: "sr-only" }, `Move ${c.id} to`),
-    h("select", { class: "input", "aria-label": `Move ${c.id} to`, onchange: (e) => { const v = e.target.value; e.target.value = ""; if (v) openMoveDialog(c, v); } },
-      h("option", { value: "" }, "Move to..."), targets.map((s) => h("option", { value: s }, s)))) : null;
+  let menu = null;
+  if (canLeave(c)) {
+    menu = h("details", { class: "movemenu" },
+      h("summary", { "aria-label": `Move ${c.id}`, title: "Move to..." }, "⋮"),
+      h("div", { class: "menu", role: "menu" }, h("div", { class: "label" }, "Move to"),
+        targets.map((s) => h("button", { type: "button", role: "menuitem", onclick: (e) => { e.currentTarget.closest("details").open = false; openMoveDialog(c, s); } }, s))));
+  }
   const card = h("article", { class: `kcard i-${c.issue}`, draggable: canLeave(c) ? "true" : null, "data-id": c.id },
+    canLeave(c) && h("span", { class: "draghandle", "aria-hidden": "true" }, "⋮⋮"),
+    menu,
     h("a", { class: "caselink", href: `#/case/${c.id}/evidence` }, caseTitle(c)),
-    h("div", { class: "meta" }, h("span", { class: "mono" }, c.id), " · ", h("span", { class: "mono" }, c.student_id)),
+    h("div", { class: "mono" }, `${c.id} · ${c.student_id}`),
     h("div", { class: "meta" }, `${c.assignment_name} (${c.assignment})`),
     h("div", { class: "meta" }, c.owner || "Unassigned", " · ", ageText(c)),
     h("div", { class: "tags" }, h("span", { class: `issue i-${c.issue}` }, h("span", { class: "swatch" }), ISSUE_LABEL[c.issue] || "Other"),
-      c.duplicates.length > 0 && h("span", { class: "tag" }, "Possible duplicate"), c.on_hold && h("span", { class: "tag" }, "On hold")),
-    sel);
+      c.duplicates.length > 0 && h("span", { class: "tag" }, "Possible duplicate"), c.on_hold && h("span", { class: "tag" }, "On hold")));
   if (canLeave(c)) {
     card.addEventListener("dragstart", (e) => { S.drag = c.id; card.classList.add("dragging"); e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setData("text/plain", c.id); });
     card.addEventListener("dragend", () => { S.drag = null; card.classList.remove("dragging"); document.querySelectorAll(".kcol.over").forEach((x) => x.classList.remove("over")); });
@@ -1336,9 +1657,10 @@ function calendarEvents(cases) {
   const out = [];
   for (const c of cases) {
     const state = caseState(c);
-    if (c.deadline) out.push({ date: ymd(c.deadline), type: "Deadline", text: `${c.assignment_name} due ${c.deadline.slice(11, 16)}`, c, state });
-    if (c.opened_at) out.push({ date: ymd(c.opened_at), type: "Case opened", text: "First message arrived", c, state });
-    for (const d of c.decisions) out.push({ date: ymd(d.ts), type: "Decision", text: d.action.replace(/_/g, " "), c, state });
+    const tag = c.id.replace(/^CASE-/, "");
+    if (c.deadline) out.push({ date: ymd(c.deadline), type: "Deadline", short: `Due ${tag}`, text: `${c.assignment_name} due ${c.deadline.slice(11, 16)}`, c, state });
+    if (c.opened_at) out.push({ date: ymd(c.opened_at), type: "Case opened", short: `Opened ${tag}`, text: "First message arrived", c, state });
+    for (const d of c.decisions) out.push({ date: ymd(d.ts), type: "Decision", short: `Decision ${tag}`, text: d.action.replace(/_/g, " "), c, state });
   }
   return out;
 }
@@ -1359,6 +1681,7 @@ async function calendarView() {
   const panel = h("section", { class: "block daypanel", "aria-live": "polite" });
   const iso = (d) => `${st.y}-${String(st.m + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
   const todayIso = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
+  const SHOW = 2;
 
   function draw() {
     heading.textContent = `${MONTH_NAMES[st.m]} ${st.y}`;
@@ -1368,12 +1691,13 @@ async function calendarView() {
     for (let d = 1; d <= days; d++) {
       const date = iso(d), ev = events.filter((e) => e.date === date);
       const counts = ["resolved", "pending", "overdue"].map((s) => [s, ev.filter((e) => e.state === s).length]).filter(([, n]) => n);
-      const dots = ev.slice(0, 6).map((e) => h("span", { class: `dot d-${e.state}`, title: `${e.type} (${STATE_WORD[e.state]})` }));
       cells.push(h("button", { type: "button", class: `day${date === todayIso ? " today" : ""}${st.sel === date ? " sel" : ""}`, role: "gridcell",
         "aria-pressed": String(st.sel === date),
         "aria-label": `${MONTH_NAMES[st.m]} ${d}, ${st.y}: ${ev.length ? counts.map(([s, n]) => `${n} ${STATE_WORD[s]}`).join(", ") : "no events"}`,
         onclick: () => { st.sel = date; draw(); } },
-      h("span", { class: "dn" }, String(d)), h("span", { class: "dots" }, dots, ev.length > 6 && h("span", { class: "more" }, `+${ev.length - 6}`))));
+      h("span", { class: "dn" }, String(d)),
+      h("span", { class: "evpills" }, ev.slice(0, SHOW).map((e) => h("span", { class: `evpill e-${e.state}`, title: `${e.type} (${STATE_WORD[e.state]})` }, e.short)),
+        ev.length > SHOW && h("span", { class: "evmore" }, `+${ev.length - SHOW} more`))));
     }
     grid.replaceChildren(...cells);
     const list = st.sel ? events.filter((e) => e.date === st.sel) : [];
@@ -1388,7 +1712,7 @@ async function calendarView() {
   const go = (delta) => { const d = new Date(st.y, st.m + delta, 1); st.y = d.getFullYear(); st.m = d.getMonth(); st.sel = null; draw(); };
   draw();
   return h("div", { class: "page" }, noticeEl(),
-    h("div", { class: "pagehead" }, h("h1", {}, "Calendar"), h("a", { class: "btn", href: "#/queue" }, "Open the list view")),
+    h("div", { class: "pagehead" }, h("h1", { class: "page-title" }, "Calendar"), h("a", { class: "btn", href: "#/queue" }, "Open the list view")),
     h("p", { class: "lede" }, "Assignment deadlines, the day each case was opened, and the days decisions were recorded. Dates are shown as recorded."),
     h("ul", { class: "legend" },
       h("li", {}, h("span", { class: "dot d-resolved" }), "Resolved: the case is closed"),
@@ -1401,8 +1725,6 @@ async function calendarView() {
       h("button", { type: "button", class: "btn quiet", onclick: () => { st.y = today.getFullYear(); st.m = today.getMonth(); st.sel = todayIso; draw(); } }, "Today")),
     grid, panel);
 }
-
-// ------------------------------------------------------------------ boot
 
 function setRole(role) {
   if (role === S.role) return;
@@ -1425,6 +1747,12 @@ async function boot() {
         : "Live AI is configured, but only runs when someone clicks Run analysis. All numbers come from rules.";
   } catch (e) { S.cfg = { ai_mode: "mock" }; }
   await refreshAi();
+  $("menu-btn").addEventListener("click", () => setMenu(!document.body.classList.contains("menu-open")));
+  $("scrim").addEventListener("click", () => setMenu(false));
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape") { setMenu(false); document.querySelectorAll(".movemenu[open]").forEach((m) => { m.open = false; }); } });
+  document.addEventListener("click", (e) => { // close an open board menu when clicking elsewhere
+    document.querySelectorAll(".movemenu[open]").forEach((m) => { if (!m.contains(e.target)) m.open = false; });
+  });
   $("role-ta").addEventListener("click", () => setRole("ta"));
   $("role-professor").addEventListener("click", () => setRole("professor"));
   $("reset").addEventListener("click", async () => {
@@ -1434,7 +1762,7 @@ async function boot() {
       S.detail = null; S.ui = { caseId: null, note: "", counted: "", body: null };
       S.notice = { kind: "info", title: "Demo data reset.", text: "The synthetic cases were restored. AI spending counters were not reset." };
       await refreshAi();
-      if (location.hash !== "#/queue") { S.hash = "#/queue"; location.hash = "#/queue"; } else render();
+      if (location.hash !== "#/dashboard") { S.hash = "#/dashboard"; location.hash = "#/dashboard"; } else render();
     } catch (e) { S.notice = { kind: "error", title: "Reset failed.", text: e.message }; render(); }
   });
   window.addEventListener("hashchange", () => {
@@ -1451,7 +1779,7 @@ async function boot() {
     S.notice = { kind: "error", title: "Something went wrong.", text };
     say(text);
   });
-  S.hash = location.hash || "#/queue";
+  S.hash = location.hash || "#/dashboard";
   render();
 }
 boot();

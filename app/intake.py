@@ -116,6 +116,8 @@ class IntakeRequest(_Strict):
     # Provenance only: "screenshot" / "document" mean the form was pre-filled by the model from an
     # uploaded image / file and then reviewed and submitted by a person.
     source: Literal["form", "screenshot", "document"] = "form"
+    # Optional explicit issue type. When omitted it is detected from the message by keyword rules.
+    issue: Literal["late_flag", "score_gap", "missing_submission", "other"] | None = None
 
     _course = field_validator("course")(lambda v: _no_pii(v) if v else None)
 

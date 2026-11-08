@@ -658,8 +658,35 @@ class Analyzer:
             ),
             "budget": self.budget.usage(),
             "limits": {"client_hourly": s.ai_client_hourly_limit},
+            "runs": self._run_stats(),
         }
         return out
+
+    @staticmethod
+    def _run_stats_rows(conn: Any) -> list[Any]:
+        return conn.execute(
+            "SELECT mode, outcome, COUNT(*) AS n, AVG(latency_ms) AS avg_ms FROM analysis_runs "
+            "WHERE outcome != 'running' GROUP BY mode, outcome"
+        ).fetchall()
+
+    def _run_stats(self) -> dict[str, Any]:
+        """Real counts from the stored runs (cleared by Reset demo data; the lifetime budget is not)."""
+        with connect(self.s.db_path) as conn:
+            rows = self._run_stats_rows(conn)
+        by = {(r["mode"], r["outcome"]): (r["n"], r["avg_ms"]) for r in rows}
+        n = lambda mode, outcome: by.get((mode, outcome), (0, None))[0]  # noqa: E731
+        answered = [by[k] for k in (("live", "accepted"), ("live", "rejected")) if k in by]
+        total_ms = sum(c * (a or 0) for c, a in answered)
+        count = sum(c for c, _ in answered)
+        return {
+            "live_accepted": n("live", "accepted"),
+            "live_rejected": n("live", "rejected"),
+            "live_errors": n("live", "error"),
+            "mock": n("mock", "mock"),
+            "rules_only": n("rules-only", "rules-only"),
+            "avg_live_latency_ms": round(total_ms / count) if count else None,
+            "guardrail_rejections": sum(n(m, "rejected") for m in ("live", "mock")),
+        }
 
 
 def _cleaned_view(c: dict[str, Any]) -> dict[str, Any]:

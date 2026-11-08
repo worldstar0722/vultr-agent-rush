@@ -83,6 +83,16 @@ Everything below is enforced on the server and covered by tests that use an HTTP
 
 **Pending live verification (operator):** a first real analysis run, a real screenshot extraction, a real PDF/DOCX extraction, and confirming that `/api/ai/status` then shows `last_success_at`.
 
+## Interface and dashboard
+
+The app opens on a **Dashboard** (`#/dashboard`): total cases, cases needing action, cases closed today and average model latency, a status bar chart, an AI performance card and a recent-activity feed. Every number is computed in the browser from existing endpoints plus two read-only ones: `GET /api/activity?limit=` (real analysis runs, decisions and new cases, newest first) and the `runs` block of `GET /api/ai/status`. Nothing is estimated; there is no "time saved" figure. In mock mode the AI card says so and never shows "Connected"; that label appears only after a real successful model call.
+
+The evidence page shows the six persisted pipeline stages, the guardrail results (citation, time, number, commitment checks) and a **See the guardrails catch a bad reply** button. That button calls `POST /api/cases/{id}/guardrail-demo`, which runs a canned faulty reply written by us through the same guardrail code. It is labelled as not coming from a model, stores nothing and uses no budget.
+
+`POST /api/intake` accepts an optional `issue` (`late_flag`, `score_gap`, `missing_submission`, `other`); when omitted the server classifies it as before.
+
+The page loads Inter and JetBrains Mono from Google Fonts. That is the only third-party request the UI makes; if it is blocked the system fonts are used.
+
 ## Demo script (2-3 minutes, Case A)
 
 1. **Queue (20s).** Open the app. Point at the banner. Case A (`CASE-A`, canvas inbox) and `CASE-A2` (email) both carry a *Duplicate candidate* badge; `CASE-D` (same student, HW2) does not. Click **Confirm merge** as TA: evidence combines into `CASE-A` and the merge is logged.

@@ -131,6 +131,16 @@ def create_app(settings: Settings | None = None, *, llm: LLM | None = None) -> F
         models_cache.update(at=time.time(), data=data)
         return data
 
+    @app.get("/api/activity")
+    def activity(limit: int = Query(10, ge=1, le=50)) -> list[dict]:
+        """Recent analysis runs, decisions and new cases (real events, newest first)."""
+        return desk.activity(limit)
+
+    @app.post("/api/cases/{case_id}/guardrail-demo")
+    def guardrail_demo(case_id: str) -> dict:
+        """Show the guardrails rejecting a canned bad reply. No model call, nothing stored."""
+        return desk.guardrail_demo(case_id)
+
     @app.get("/api/cases")
     def list_cases(
         status: str | None = None,

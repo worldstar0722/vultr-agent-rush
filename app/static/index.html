@@ -5,22 +5,75 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light">
   <title>GradeCase</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/static/style.css">
   <style>
-    /* Shell fallback, kept inline on purpose so the mobile layout never depends on the external file. */
-    @media(max-width:900px){.app{display:flex!important;flex-direction:column!important}.rail{position:static!important;height:auto!important;width:100%!important;flex-direction:row!important;padding:10px 16px!important}}
+    /* Mobile shell rules, kept inline on purpose so the layout never depends on the external file. */
+    @media (max-width: 768px) {
+      .app {
+        display: flex !important;
+        flex-direction: column !important;
+      }
+      .rail {
+        position: static !important;
+        height: auto !important;
+        width: 100% !important;
+        flex-direction: row !important;
+        align-items: center !important;
+        padding: 8px 12px !important;
+        gap: 4px !important;
+      }
+      .rail .brand-sub,
+      .rail .rail-foot,
+      .rail .ai-badge { display: none !important; }
+      .rail #nav { display: flex !important; gap: 2px !important; }
+      .rail #nav a { padding: 6px 8px !important; font-size: 12px !important; }
+      #view { padding: 16px !important; }
+      .cols { display: block !important; }
+      .board-cols { flex-direction: column !important; }
+
+      /* icon-only nav, hamburger, and the full sidebar as an overlay */
+      .rail .navlabel { display: none !important; }
+      .rail .navdivider, .rail .navgroup { display: none !important; }
+      .rail .brand-text { display: none !important; }
+      .rail .brand { padding: 0 !important; }
+      .menu-btn { display: inline-flex !important; order: 3 !important; margin-left: auto !important; }
+      .rail #nav { order: 2 !important; flex-direction: row !important; margin-left: 8px !important; }
+      body.menu-open .rail {
+        position: fixed !important; top: 0 !important; left: 0 !important; bottom: 0 !important;
+        width: min(300px, 86vw) !important; height: 100vh !important;
+        flex-direction: column !important; align-items: stretch !important; flex-wrap: nowrap !important;
+        padding: 16px !important; gap: 20px !important; overflow-y: auto !important; z-index: 50 !important;
+      }
+      body.menu-open .rail .brand-text,
+      body.menu-open .rail .brand-sub,
+      body.menu-open .rail .navlabel { display: block !important; }
+      body.menu-open .rail .navgroup { display: flex !important; }
+      body.menu-open .rail .navdivider { display: block !important; }
+      body.menu-open .rail .rail-foot { display: flex !important; }
+      body.menu-open .rail .ai-badge { display: block !important; }
+      body.menu-open .rail .rail-foot { flex-direction: column !important; margin-top: auto !important; }
+      body.menu-open .rail #nav { flex-direction: column !important; margin-left: 0 !important; order: 0 !important; }
+      body.menu-open .rail #nav a { font-size: 14px !important; padding: 10px 12px !important; }
+      body.menu-open .menu-btn { position: absolute !important; top: 12px !important; right: 12px !important; }
+    }
   </style>
 </head>
 <body>
   <a class="skip" href="#view">Skip to content</a>
   <div class="app">
-    <aside class="rail" aria-label="Workspace">
+    <aside class="rail" id="rail" aria-label="Workspace">
       <div class="brand">
         <span class="monogram" aria-hidden="true">GC</span>
-        <div>
+        <div class="brand-text">
           <div class="wordmark" id="name">GradeCase</div>
           <div class="brand-sub">Academic case desk</div>
         </div>
+        <button class="menu-btn" id="menu-btn" type="button" aria-label="Open menu" aria-expanded="false" aria-controls="rail">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+        </button>
       </div>
       <nav id="nav" aria-label="Main"></nav>
       <div class="rail-foot">
@@ -32,9 +85,10 @@
           </div>
           <p class="hint">Not access control. Anyone can switch.</p>
         </div>
-        <div class="ai" id="ai"></div>
+        <div class="ai ai-badge" id="ai"></div>
       </div>
     </aside>
+    <div class="scrim" id="scrim" hidden></div>
 
     <div class="main">
       <header class="topbar">
@@ -44,7 +98,7 @@
       <div class="strip" id="banner" role="note">Synthetic demo data. No real student records. No grades are changed and no messages are sent.</div>
       <main id="view" tabindex="-1"><p class="muted pad">Loading...</p></main>
       <footer class="foot">
-        <span id="mode" class="muted"></span>
+        <span id="mode"></span>
         <button id="reset" type="button" class="linkbtn">Reset demo data</button>
       </footer>
     </div>

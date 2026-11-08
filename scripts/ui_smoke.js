@@ -14,6 +14,8 @@ const check = (name, ok, extra = "") => {
   console.log(`${ok ? "PASS" : "FAIL"}  ${name}${extra ? "  " + extra : ""}`);
   if (!ok) failed++;
 };
+// Google Fonts may be unreachable in a sandbox; the page falls back to system fonts
+const isFont = (m) => /fonts\.(googleapis|gstatic)\.com/.test((m.location() || {}).url || "");
 // a valid 1x1 PNG
 const PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==", "base64");
 
@@ -29,16 +31,27 @@ const PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR
     const p = await ctx.newPage();
     const errs = [];
     p.on("pageerror", (e) => errs.push("pageerror: " + e.message));
-    p.on("console", (m) => m.type() === "error" && errs.push("console: " + m.text()));
+    p.on("console", (m) => m.type() === "error" && !isFont(m) && errs.push("console: " + m.text()));
     p.on("dialog", (d) => d.accept());
     const overflow = () => p.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
-    for (const [name, hash, waitFor] of [["queue", "#/queue", ".qrow"], ["evidence", "#/case/CASE-A/evidence", ".timeline"],
-      ["decision", "#/case/CASE-A/decision", "#run-analysis"], ["intake", "#/new", "form.intake"],
+    for (const [name, hash, waitFor] of [["dashboard", "#/dashboard", ".hero"], ["queue", "#/queue", ".qrow"], ["evidence", "#/case/CASE-A/evidence", ".timeline"],
+      ["decision", "#/case/CASE-A/decision", "#run-analysis"], ["intake", "#/new", ".vision"],
       ["board", "#/board", ".kcol"], ["calendar", "#/calendar", ".calgrid"]]) {
       await p.goto(BASE + "/" + hash);
       await p.waitForSelector(waitFor);
       await p.screenshot({ path: `${OUT}/${label}-${name}.png`, fullPage: true });
       check(`${label}: no horizontal overflow (${name})`, (await overflow()) <= 0, String(await overflow()));
+    }
+    if (label === "mobile") {
+      await p.goto(BASE + "/#/dashboard");
+      await p.waitForSelector(".hero");
+      check("mobile: compact top bar with a hamburger and an icon-only nav", (await p.locator("#menu-btn").isVisible()) && !(await p.locator("#nav .navlabel").first().isVisible()) && (await p.locator("#rail").boundingBox()).height <= 70, String((await p.locator("#rail").boundingBox()).height));
+      check("mobile: the role switch is not in the bar", !(await p.locator("#role-professor").isVisible()));
+      await p.click("#menu-btn");
+      check("mobile: the menu opens the full sidebar (labels, role switch, AI card)", (await p.locator("#role-professor").isVisible()) && (await p.locator("#ai").isVisible()) && (await p.locator("#nav .navlabel").first().isVisible()));
+      await p.screenshot({ path: `${OUT}/mobile-menu.png` });
+      await p.keyboard.press("Escape");
+      check("mobile: Escape closes the menu", !(await p.locator("#role-professor").isVisible()));
     }
     check(`${label}: no console errors`, errs.length === 0, errs.join(" | "));
     await ctx.close();
@@ -49,7 +62,7 @@ const PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR
   const p = await ctx.newPage();
   const errs = [];
   p.on("pageerror", (e) => errs.push(e.message));
-  p.on("console", (m) => m.type() === "error" && errs.push(m.text()));
+  p.on("console", (m) => m.type() === "error" && !isFont(m) && errs.push(m.text()));
   p.on("dialog", (d) => d.accept());
   const go = async (hash, sel) => { await p.goto(BASE + "/" + hash); await p.waitForSelector(sel); };
 
@@ -70,7 +83,7 @@ const PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR
   check("opening Decision does not create a draft", (await p.locator("#body").count()) === 0);
   await p.click("#run-analysis");
   await p.waitForSelector("#body");
-  const stages = await p.locator(".stage").allInnerTexts();
+  const stages = await p.locator(".pipeline .pstep").allInnerTexts();
   check("workflow shows the 6 real stages", stages.length === 6 && /Load evidence/.test(stages[0]) && /Await human/.test(stages[5]), String(stages.length));
   check("mock run is labelled as mock (no model called)", /no AI model is called|no model was called/i.test(await p.locator(".aipanel").innerText()));
   await p.click("#role-professor");
@@ -83,6 +96,31 @@ const PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR
   await p.waitForSelector(".notice.success");
   check("manual duplicate merge works", (await p.locator(".qrow").count()) === 4 && (await p.locator(".dup").count()) === 0);
 
+  // ---- dashboard, AI transparency, guardrail demonstration
+  await go("#/dashboard", ".hero");
+  const dash = await p.locator("#view").innerText();
+  check("dashboard: is the landing page, with the tagline and the AI-explains / humans-decide chips",
+    /정보는 있는데, 사건은 없다/.test(dash) && /The data exists, but the case doesn't/.test(dash) && /Rules compute times and scores/.test(dash) && /AI explains and drafts/.test(dash) && /Humans decide/.test(dash));
+  check("dashboard: four stat cards with real labels", (await p.locator(".scard").count()) === 4 && /Total cases/.test(dash) && /Need action/.test(dash) && /Closed today/.test(dash) && /Avg model latency/.test(dash));
+  check("dashboard: no invented 'time saved' figure", !/time saved|~\s*12 min/i.test(dash));
+  check("dashboard: a bar for each of the five statuses", (await p.locator(".dashcard .hbar").count()) === 5);
+  check("dashboard: mock mode says no model is called and never claims 'Connected'", /Mock mode/.test(await p.locator(".dashgrid").innerText()) && !/Connected/.test(await p.locator("#ai").innerText()));
+  check("dashboard: recent activity lists real events", (await p.locator(".feed li").count()) >= 3);
+  await p.click('a:has-text("Open the demo case")');
+  await p.waitForSelector(".timeline");
+  check("dashboard: the demo-case button opens CASE-A", /CASE-A/.test(p.url()));
+  await p.click("#run-analysis");
+  await p.waitForSelector(".aicard .gtable");
+  check("evidence: the AI card shows classification match and the 6-step pipeline", (await p.locator(".aicard .match .res").count()) === 1 && (await p.locator(".aicard .pipeline .pstep").count()) === 6);
+  check("evidence: guardrails show 4/4 on the mock template and say no model was involved", /4\/4 passed/.test(await p.locator(".aicard").innerText()) && /No model was involved/.test(await p.locator(".aicard").innerText()));
+  check("evidence: the card says AI explains, humans decide", /AI explains/.test(await p.locator(".aicard").innerText()) && /Humans decide/.test(await p.locator(".aicard").innerText()));
+  await p.click('button:has-text("See the guardrails catch a bad reply")');
+  await p.waitForSelector(".demo-box .gtable");
+  const demo = await p.locator(".demo-box").innerText();
+  check("guardrail demonstration: labelled as not from a model, checks FAIL, reply rejected", /did not come from a model/.test(demo) && /FAILED/.test(demo) && /Rejected/.test(demo) && /POL-DEMO-v9/.test(demo));
+  await p.screenshot({ path: `${OUT}/desktop-evidence-ai.png`, fullPage: true });
+  check("the demonstration changed nothing (still one stored run)", (await (await fetch(`${BASE}/api/cases/CASE-A`)).json()).workflow.runs.length === 1);
+
   // ---- Case A: the whole decision flow
   await go("#/case/CASE-A/decision", "#run-analysis");
   check("A as TA: primary is Request professor review", (await p.locator(".act.primary button").innerText()).trim() === "Request professor review");
@@ -92,6 +130,7 @@ const PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR
   await p.click(".act.primary button");
   check("note is required before recording", /required/.test(await p.locator("#note-err").innerText()));
   await p.fill("#note", "Professor ruling needed on attempt 1");
+  check("decision: exactly one step is active, and finishing the note completes step 2", (await p.locator(".step.active").count()) === 1 && (await p.locator(".step").nth(1).evaluate((el) => el.classList.contains("done"))));
   await p.click(".act.primary button");
   await p.waitForSelector(".notice.success");
   check("escalation recorded: status, nothing sent", /Awaiting professor/.test(await p.locator(".notice.success").innerText()) && /Nothing was sent/.test(await p.locator(".notice.success").innerText()));
@@ -131,7 +170,7 @@ const PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR
   await go("#/case/CASE-A/evidence", ".timeline");
   const summary = await p.locator(".summary").innerText();
   check("evidence summary reconciles after approval (gradebook still differs)", /still shows 7/.test(summary) && !/Records are consistent/.test(summary));
-  check("AI block marks the analysis as generated before the decision", /Generated before the decision/.test(await p.locator(".colmain").innerText()));
+  check("AI card marks the analysis as generated before the decision", /generated before the decision/i.test(await p.locator(".colmain").innerText()));
   await p.reload();
   await p.waitForSelector(".timeline");
   check("refresh keeps the decision", /Closed/.test(await p.locator(".metarow").innerText()));
@@ -164,7 +203,9 @@ const PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR
   const c = await (await fetch(`${BASE}/api/cases/CASE-C`)).json();
   check("board: server status and decision log agree", c.case.status === "Awaiting student info" && c.decisions.at(-1).action === "request_info");
   // keyboard / touch alternative, and server rules still apply (a TA may not approve a blocked case)
-  await p.selectOption('.kcard[data-id="CASE-B"] select', "Closed");
+  await p.click('.kcard[data-id="CASE-B"] .movemenu summary');
+  check("board: the move menu lists only valid targets (never New)", (await p.locator('.kcard[data-id="CASE-B"] .menu button:has-text("New")').count()) === 0 && (await p.locator('.kcard[data-id="CASE-B"] .menu button').count()) === 4);
+  await p.click('.kcard[data-id="CASE-B"] .menu button:has-text("Closed")');
   await p.waitForSelector("dialog.movedlg[open]");
   await p.click('dialog button:has-text("Record move")');
   await p.waitForSelector("dialog .notice.error");
@@ -175,7 +216,7 @@ const PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR
   // ---- calendar: month navigation, dots, click a day
   await go("#/calendar", ".calgrid");
   const head = async () => (await p.locator(".calhead").innerText()).trim();
-  check("calendar: shows a month with events (dots present)", (await p.locator(".day .dot").count()) > 0, await head());
+  check("calendar: events are pills with text inside the day cells", (await p.locator(".day .evpill").count()) > 0 && /Due|Opened|Decision/.test(await p.locator(".day .evpill").first().innerText()), await head());
   let guard = 0;
   while (!/November 2026/.test(await head()) && guard++ < 24) await p.click(/20(2[7-9]|3)/.test(await head()) ? 'button[aria-label="Previous month"]' : 'button[aria-label="Next month"]');
   check("calendar: month navigation reaches November 2026", /November 2026/.test(await head()));
@@ -188,7 +229,7 @@ const PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR
   await p.click('button[aria-label="Previous month"]');
   await p.click('button.day[aria-label^="November 6, 2026"]');
   check("calendar: colour is never the only cue (labelled and listed)", /resolved|pending|overdue/.test(await p.locator(".daypanel").innerText()) && /overdue|pending|resolved/.test(await p.locator('button.day[aria-label^="November 6, 2026"]').getAttribute("aria-label")));
-  check("rail has Board and Calendar links", (await p.locator('#nav a:has-text("Board")').count()) === 1 && (await p.locator('#nav a:has-text("Calendar")').count()) === 1);
+  check("rail has Board and Calendar links", (await p.locator('#nav a[href="#/board"]').count()) === 1 && (await p.locator('#nav a[href="#/calendar"]').count()) === 1);
 
   // overdue = an OPEN case older than 7 days. Move the browser clock forward to prove the red marker.
   const late = await ctx.newPage();
@@ -196,13 +237,16 @@ const PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR
   late.on("dialog", (d) => d.accept());
   await late.goto(BASE + "/#/calendar");
   await late.waitForSelector(".calgrid");
-  check("calendar: open cases older than 7 days show the overdue marker", (await late.locator(".day .d-overdue").count()) > 0 && /Overdue/.test(await late.locator(".legend").innerText()));
-  const overdueLabel = await late.locator('button.day:has(.d-overdue)').first().getAttribute("aria-label");
+  check("calendar: open cases older than 7 days show the overdue marker", (await late.locator(".day .e-overdue").count()) > 0 && /Overdue/.test(await late.locator(".legend").innerText()));
+  const overdueLabel = await late.locator('button.day:has(.e-overdue)').first().getAttribute("aria-label");
   check("calendar: the overdue state is also in the accessible label", /overdue/.test(overdueLabel), overdueLabel);
   await late.close();
 
   // ---- intake: form validation, example, and the screenshot flow (mock: sample values)
-  await go("#/new", "form.intake");
+  await go("#/new", ".modetabs");
+  check("intake opens on the Upload tab with the form hidden until a file is read", (await p.locator("#tab-upload").getAttribute("aria-selected")) === "true" && !(await p.locator("form.intake").isVisible()));
+  await p.click("#tab-manual");
+  check("Manual entry shows the form with an Issue type dropdown", (await p.locator("form.intake").isVisible()) && (await p.locator("form.intake select").filter({ hasText: "Auto-detect" }).count()) === 1);
   await p.click('button:has-text("Score gap")');
   await p.fill("#f-message-text", "Please email me at jane.smith@example.edu");
   await p.check("#f-ack");
@@ -215,7 +259,7 @@ const PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR
   await p.waitForSelector(".timeline");
   check("valid example creates a case and opens its evidence", /CASE-10\d/.test(p.url()) && /Score does not match rubric/.test(await p.locator("h1").innerText()));
 
-  await go("#/new", "form.intake");
+  await go("#/new", "#read-shot");
   check("Read screenshot is disabled until a file AND the acknowledgement are given", await p.locator("#read-shot").isDisabled());
   await p.setInputFiles("#f-shot", { name: "email.png", mimeType: "image/png", buffer: PNG });
   check("still disabled without the acknowledgement", await p.locator("#read-shot").isDisabled());
@@ -223,6 +267,7 @@ const PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR
   check("enabled with both", await p.locator("#read-shot").isEnabled());
   await p.click("#read-shot");
   await p.waitForSelector("#vision-result .notice");
+  check("the extract button is honest about mock mode", /mock mode/i.test(await p.locator("#read-shot").innerText()));
   check("mock banner says these are sample values", /Sample values, not analysed from your file/.test(await p.locator("#vision-result").innerText()));
   check("form is pre-filled and editable", (await p.inputValue("#f-student")) === "S-4B21" && (await p.inputValue("#f-assignment")) === "HW6" && /submitted on time/.test(await p.inputValue("#f-message-text")));
   await p.screenshot({ path: `${OUT}/desktop-intake-vision.png`, fullPage: true });

@@ -40,33 +40,57 @@ def test_misleading_score_label_is_gone():
 
 def test_upload_zone_accepts_documents_and_says_so():
     js = (STATIC / "app.js").read_text()
-    assert "Drop screenshot, PDF, or document" in js
+    assert "Drop a screenshot, PDF, or document" in js
     for needle in ("application/pdf", ".docx", ".csv", "/api/intake/upload"):
         assert needle in js, needle
 
 
 def test_mobile_shell_rules_are_embedded_in_the_page_itself(client):
     html = client.get("/").text
-    assert "<style>" in html and "@media(max-width:900px)" in html
+    assert "<style>" in html and "@media (max-width: 768px)" in html
     for rule in (
-        ".app{display:flex!important",
-        ".rail{position:static!important",
-        "flex-direction:column!important",
+        ".app {\n        display: flex !important;",
+        "position: static !important;",
+        "flex-direction: column !important;",
+        ".menu-btn { display: inline-flex !important;",
     ):
         assert rule in html, rule
+    assert "fonts.googleapis.com/css2?family=Inter" in html and "JetBrains+Mono" in html
 
 
 def test_palette_has_no_beige_and_uses_the_dark_sidebar_and_blue_accent():
     css = (STATIC / "style.css").read_text().lower()
     for token in (
-        "--sidebar: #0f172a",
-        "--accent: #2563eb",
-        "--border: #e5e7eb",
-        "--text: #111827",
-        "--muted: #6b7280",
-        "--bg: #f9fafb",
+        "--sidebar-bg: #0f172a",
+        "--brand: #1e40af",
+        "--border: #e2e8f0",
+        "--text: #0f172a",
+        "--text-secondary: #475569",
+        "--bg-subtle: #f8fafc",
     ):
         assert token in css, token
     for beige in ("#f5f4ef", "#ecebe2", "#fbf3df", "#fdf3e3", "#faf9f5"):
         assert beige not in css, beige
-    assert "--shadow: 0 1px 3px rgba(0, 0, 0, 0.04)" in css and "box-shadow: var(--shadow)" in css
+    assert "--shadow-sm:" in css and "box-shadow: var(--shadow-sm)" in css
+
+
+def test_dashboard_is_the_landing_page_and_has_no_invented_figures():
+    js = (STATIC / "app.js").read_text()
+    assert "정보는 있는데, 사건은 없다" in js
+    assert '|| "#/dashboard"' in js
+    assert "time saved" not in js.lower()
+    for label in ("Total cases", "Need action", "Closed today", "Avg model latency"):
+        assert label in js
+
+
+def test_guardrail_demo_is_labelled_as_not_from_a_model():
+    js = (STATIC / "app.js").read_text()
+    assert "/guardrail-demo" in js
+    assert "did not come from a model" in (STATIC.parent / "service.py").read_text()
+
+
+def test_spec_layout_pieces_exist_in_the_stylesheet():
+    css = (STATIC / "style.css").read_text()
+    for sel in (".pipeline", ".gtable", ".tlmark", ".step.active", ".movemenu", ".evpill", ".drop"):
+        assert sel in css, sel
+    assert "220px" in css and "1100px" in css
